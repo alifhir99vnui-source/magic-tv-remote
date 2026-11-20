@@ -29,6 +29,7 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
+import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.WritableNativeArray;
@@ -335,7 +336,7 @@ public class MagicControlModule extends ReactContextBaseJavaModule {
           String address = safeAddress(device);
           if (name == null || address == null) return;
           for (int i = 0; i < results.size(); i++) {
-            WritableMap existing = results.getMap(i);
+            ReadableMap existing = results.getMap(i);
             if (address.equals(existing.getString("address"))) return;
           }
           WritableMap item = new WritableNativeMap();
