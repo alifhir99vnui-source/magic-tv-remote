@@ -1,6 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
-  DeviceEventEmitter,
   PanResponder,
   Pressable,
   ScrollView,
@@ -10,818 +9,907 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-export interface RemoteExperienceProps {
+export interface RemoteAppShortcut {
+  id: string;
+  name: string;
+  packageName: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}
+
+export interface RemoteExperienceColors {
+  background: string;
+  card: string;
+  cardAlt: string;
+  border: string;
+  text: string;
+  secondary: string;
+  input: string;
+}
+
+export interface RemoteMouseController {
+  mode: 'touchpad' | 'air';
+  setMode: (mode: 'touchpad' | 'air') => void;
+  pointerSupported: boolean;
+  airSupported: boolean;
+  pointerStatus: string;
+  airStatus: string;
+  sensitivity: number;
+  setSensitivity: (value: number) => void;
+  onTouchpadDelta: (dx: number, dy: number) => void;
+  onTouchpadPress: () => void;
+  onRightClick: () => void;
+  onRecenter: () => void;
+  onScroll: (deltaY: number) => void;
+}
+
+interface RemoteExperienceProps {
   activeTab: 'remote' | 'mouse';
   onTabChange: (tab: 'remote' | 'mouse') => void;
   onSendKey: (key: string) => void;
-  colors: any;
-  mouse: {
-    mode: 'touchpad' | 'air';
-    setMode: (mode: 'touchpad' | 'air') => void;
-    pointerSupported: boolean;
-    airSupported: boolean;
-    pointerStatus?: string;
-    airStatus?: string;
-    sensitivity: number;
-    setSensitivity: (val: number) => void;
-    onTouchpadDelta: (dx: number, dy: number) => void;
-    onTouchpadPress: () => void;
-    onRightClick?: () => void;
-    onRecenter?: () => void;
-  };
+  onOpenSettings?: () => void;
+  colors: RemoteExperienceColors;
+  isConnected: boolean;
+  apps: RemoteAppShortcut[];
+  onLaunchApp: (packageName: string) => void;
+  mouse: RemoteMouseController;
 }
+
+const ACCENT = '#7CE3C3';
 
 export function RemoteExperience({
   activeTab,
   onTabChange,
   onSendKey,
+  colors,
+  apps,
+  onLaunchApp,
   mouse,
 }: RemoteExperienceProps) {
-  const gestureRef = useRef({ x: 0, y: 0, moved: false });
-  const mouseRef = useRef(mouse);
-  const [cursorDot, setCursorDot] = useState({ x: 0, y: 0 });
-  const [expandedPad, setExpandedPad] = useState(false);
+  const [keypadVisible, setKeypadVisible] = useState(false);
+  const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
+  const movedRef = useRef(false);
 
-  mouseRef.current = mouse;
+  const touchpadResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (evt) => {
+          lastTouchRef.current = {
+            x: evt.nativeEvent.pageX,
+            y: evt.nativeEvent.pageY,
+          };
+          movedRef.current = false;
+        },
+        onPanResponderMove: (evt) => {
+          if (!lastTouchRef.current) return;
+          const dx =
+            (evt.nativeEvent.pageX - lastTouchRef.current.x) *
+            mouse.sensitivity;
+          const dy =
+            (evt.nativeEvent.pageY - lastTouchRef.current.y) *
+            mouse.sensitivity;
 
-  useEffect(() => {
-    const volumeSubscription = DeviceEventEmitter.addListener(
-      'onHardwareVolumeKey',
-      (direction: string) => {
-        if (direction === 'up') onSendKey('volumeUp');
-        if (direction === 'down') onSendKey('volumeDown');
-      },
-    );
-
-    const gyroSubscription = DeviceEventEmitter.addListener(
-      'onGyroDelta',
-      (event: { dx: number; dy: number }) => {
-        const currentMouse = mouseRef.current;
-
-        if (activeTab !== 'mouse' || currentMouse.mode !== 'air') return;
-
-        const sensitivity = currentMouse.sensitivity || 1;
-        setCursorDot((previous) => ({
-          x: Math.max(-95, Math.min(95, previous.x + event.dx * sensitivity)),
-          y: Math.max(-48, Math.min(48, previous.y + event.dy * sensitivity)),
-        }));
-
-        currentMouse.onTouchpadDelta(event.dx, event.dy);
-      },
-    );
-
-    return () => {
-      volumeSubscription.remove();
-      gyroSubscription.remove();
-    };
-  }, [activeTab, mouse.mode, mouse.sensitivity, onSendKey]);
-
-  const touchpadPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderTerminationRequest: () => false,
-      onPanResponderGrant: () => {
-        gestureRef.current = { x: 0, y: 0, moved: false };
-      },
-      onPanResponderMove: (_, gesture) => {
-        const dx = gesture.dx - gestureRef.current.x;
-        const dy = gesture.dy - gestureRef.current.y;
-
-        if (Math.abs(gesture.dx) + Math.abs(gesture.dy) > 5) {
-          gestureRef.current.moved = true;
-        }
-
-        if (gestureRef.current.moved && (dx !== 0 || dy !== 0)) {
-          setCursorDot((previous) => ({
-            x: Math.max(-95, Math.min(95, previous.x + dx * 0.7)),
-            y: Math.max(-48, Math.min(48, previous.y + dy * 0.7)),
-          }));
-          mouseRef.current.onTouchpadDelta(dx, dy);
-        }
-
-        gestureRef.current.x = gesture.dx;
-        gestureRef.current.y = gesture.dy;
-      },
-      onPanResponderRelease: () => {
-        if (!gestureRef.current.moved) {
-          mouseRef.current.onTouchpadPress();
-        }
-        gestureRef.current = { x: 0, y: 0, moved: false };
-      },
-      onPanResponderTerminate: () => {
-        gestureRef.current = { x: 0, y: 0, moved: false };
-      },
-    }),
-  ).current;
-
-  const selectRemoteMode = () => {
-    onTabChange('remote');
-    mouse.setMode('touchpad');
-  };
-
-  const selectMouseMode = (mode: 'touchpad' | 'air') => {
-    onTabChange('mouse');
-    mouse.setMode(mode);
-  };
-
-  const recenterPointer = () => {
-    setCursorDot({ x: 0, y: 0 });
-    mouse.onRecenter?.();
-  };
+          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+            movedRef.current = true;
+            mouse.onTouchpadDelta(dx, dy);
+            lastTouchRef.current = {
+              x: evt.nativeEvent.pageX,
+              y: evt.nativeEvent.pageY,
+            };
+          }
+        },
+        onPanResponderRelease: () => {
+          if (!movedRef.current) {
+            mouse.onTouchpadPress();
+          }
+          lastTouchRef.current = null;
+          movedRef.current = false;
+        },
+      }),
+    [mouse],
+  );
 
   return (
-    <ScrollView
-      style={styles.root}
-      contentContainerStyle={styles.scrollContent}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-    >
-      <View style={styles.topControls}>
-        <View style={styles.modeToggleGroup}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: activeTab === 'remote' }}
-            onPress={selectRemoteMode}
+    <View style={styles.container}>
+      <View
+        style={[
+          styles.modeSwitcher,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: activeTab === 'remote' }}
+          onPress={() => onTabChange('remote')}
+          style={[
+            styles.modeButton,
+            activeTab === 'remote' && {
+              backgroundColor: colors.cardAlt,
+              borderColor: ACCENT,
+            },
+          ]}
+        >
+          <Ionicons
+            name="keypad-outline"
+            size={16}
+            color={activeTab === 'remote' ? ACCENT : colors.secondary}
+          />
+          <Text
             style={[
-              styles.modeButton,
-              activeTab === 'remote' && styles.modeButtonActive,
+              styles.modeButtonText,
+              { color: activeTab === 'remote' ? ACCENT : colors.secondary },
             ]}
           >
-            <Ionicons
-              name="game-controller-outline"
-              size={16}
-              color={activeTab === 'remote' ? '#0A1012' : '#94A3B8'}
-            />
-            <Text
-              style={[
-                styles.modeButtonText,
-                activeTab === 'remote' && styles.modeButtonTextActive,
-              ]}
-            >
-              الريموت
-            </Text>
-          </Pressable>
+            الأزرار
+          </Text>
+        </Pressable>
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: activeTab === 'mouse' }}
-            onPress={() => selectMouseMode(mouse.mode)}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: activeTab === 'mouse' }}
+          onPress={() => onTabChange('mouse')}
+          style={[
+            styles.modeButton,
+            activeTab === 'mouse' && {
+              backgroundColor: colors.cardAlt,
+              borderColor: ACCENT,
+            },
+          ]}
+        >
+          <Ionicons
+            name="hand-left-outline"
+            size={16}
+            color={activeTab === 'mouse' ? ACCENT : colors.secondary}
+          />
+          <Text
             style={[
-              styles.modeButton,
-              activeTab === 'mouse' && styles.modeButtonActive,
+              styles.modeButtonText,
+              { color: activeTab === 'mouse' ? ACCENT : colors.secondary },
             ]}
           >
-            <Ionicons
-              name="mouse-outline"
-              size={16}
-              color={activeTab === 'mouse' ? '#0A1012' : '#94A3B8'}
-            />
-            <Text
-              style={[
-                styles.modeButtonText,
-                activeTab === 'mouse' && styles.modeButtonTextActive,
-              ]}
-            >
-              الماوس
-            </Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.quickActions}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Voice"
-            onPress={() => onSendKey('voice')}
-            style={styles.quickActionButton}
-          >
-            <Ionicons name="mic-outline" size={18} color="#7CE3C3" />
-            <Text style={styles.quickActionText}>Voice</Text>
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="الإعدادات"
-            onPress={() => onSendKey('settings')}
-            style={styles.iconButton}
-          >
-            <Ionicons name="settings-outline" size={19} color="#7CE3C3" />
-          </Pressable>
-        </View>
+            الماوس
+          </Text>
+        </Pressable>
       </View>
 
-      {activeTab === 'mouse' ? (
-        <View style={styles.mouseDeck}>
-          <View style={styles.mouseHeaderRow}>
-            <View style={styles.mouseModeGroup}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ selected: mouse.mode === 'touchpad' }}
-                disabled={!mouse.pointerSupported}
-                onPress={() => selectMouseMode('touchpad')}
-                style={[
-                  styles.mouseModeButton,
-                  mouse.mode === 'touchpad' && styles.mouseModeButtonActive,
-                  !mouse.pointerSupported && styles.disabledButton,
-                ]}
-              >
-                <Ionicons
-                  name="finger-print-outline"
-                  size={15}
-                  color={mouse.mode === 'touchpad' ? '#0A1012' : '#94A3B8'}
-                />
-                <Text
-                  style={[
-                    styles.mouseModeText,
-                    mouse.mode === 'touchpad' && styles.mouseModeTextActive,
-                  ]}
-                >
-                  Touchpad
-                </Text>
-              </Pressable>
+      {activeTab === 'remote' ? (
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.topActionsRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="طاقة"
+              onPress={() => onSendKey('power')}
+              style={[styles.powerButton, { borderColor: '#7F1D1D' }]}
+            >
+              <Ionicons name="power" size={21} color="#F87171" />
+            </Pressable>
 
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ selected: mouse.mode === 'air' }}
-                disabled={!mouse.airSupported}
-                onPress={() => selectMouseMode('air')}
-                style={[
-                  styles.mouseModeButton,
-                  mouse.mode === 'air' && styles.mouseModeButtonActive,
-                  !mouse.airSupported && styles.disabledButton,
-                ]}
-              >
-                <Ionicons
-                  name="compass-outline"
-                  size={15}
-                  color={mouse.mode === 'air' ? '#0A1012' : '#94A3B8'}
-                />
-                <Text
-                  style={[
-                    styles.mouseModeText,
-                    mouse.mode === 'air' && styles.mouseModeTextActive,
-                  ]}
-                >
-                  Air Mouse
-                </Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.mouseTools}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="إعادة توسيط المؤشر"
-                onPress={recenterPointer}
-                style={styles.toolIconButton}
-              >
-                <Ionicons name="locate-outline" size={17} color="#7CE3C3" />
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={
-                  expandedPad ? 'تصغير لوحة اللمس' : 'تكبير لوحة اللمس'
-                }
-                onPress={() => setExpandedPad((expanded) => !expanded)}
-                style={styles.toolIconButton}
-              >
-                <Ionicons
-                  name={expandedPad ? 'contract-outline' : 'expand-outline'}
-                  size={17}
-                  color="#7CE3C3"
-                />
-              </Pressable>
-            </View>
-          </View>
-
-          <View
-            {...touchpadPanResponder.panHandlers}
-            accessibilityRole="button"
-            accessibilityLabel={
-              mouse.mode === 'air'
-                ? 'لوحة تحكم الماوس الهوائي'
-                : 'لوحة اللمس: اسحب لتحريك المؤشر واضغط للنقر'
-            }
-            style={[
-              styles.padSurface,
-              expandedPad && styles.expandedPadSurface,
-            ]}
-          >
-            <View
-              pointerEvents="none"
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="كتم الصوت"
+              onPress={() => onSendKey('mute')}
               style={[
-                styles.pointerDot,
+                styles.circleActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons
+                name="volume-mute-outline"
+                size={20}
+                color={colors.text}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="معلومات"
+              onPress={() => onSendKey('info')}
+              style={[
+                styles.circleActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons
+                name="information-circle-outline"
+                size={20}
+                color={colors.text}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="لوحة الأرقام"
+              onPress={() => setKeypadVisible((v) => !v)}
+              style={[
+                styles.circleActionButton,
                 {
-                  transform: [
-                    { translateX: cursorDot.x },
-                    { translateY: cursorDot.y },
-                  ],
+                  backgroundColor: keypadVisible
+                    ? colors.cardAlt
+                    : colors.card,
+                  borderColor: keypadVisible ? ACCENT : colors.border,
                 },
               ]}
-            />
-            <Text pointerEvents="none" style={styles.padCaption}>
-              {mouse.mode === 'air'
-                ? 'حرّك الهاتف لتوجيه المؤشر • اضغط للنقر'
-                : 'اسحب لتحريك المؤشر • اضغط للنقر'}
-            </Text>
+            >
+              <Text
+                style={[
+                  styles.numpadToggleText,
+                  { color: keypadVisible ? ACCENT : colors.text },
+                ]}
+              >
+                123
+              </Text>
+            </Pressable>
           </View>
 
-          {mouse.mode === 'air' && (
-            <Text style={styles.statusText}>
-              {mouse.airStatus || 'وضع الماوس الهوائي'}
-            </Text>
+          {keypadVisible && (
+            <View
+              style={[
+                styles.numpadCard,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              {[
+                ['1', '2', '3'],
+                ['4', '5', '6'],
+                ['7', '8', '9'],
+                ['menu', '0', 'back'],
+              ].map((row, rIndex) => (
+                <View key={rIndex} style={styles.numpadRow}>
+                  {row.map((item) => {
+                    const isDigit = /^[0-9]$/.test(item);
+                    const keyName = isDigit ? `num${item}` : item;
+                    return (
+                      <Pressable
+                        key={item}
+                        accessibilityRole="button"
+                        onPress={() => onSendKey(keyName)}
+                        style={[
+                          styles.numpadKey,
+                          {
+                            backgroundColor: colors.input,
+                            borderColor: colors.border,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[styles.numpadKeyText, { color: colors.text }]}
+                        >
+                          {item === 'menu'
+                            ? 'MENU'
+                            : item === 'back'
+                              ? 'DEL'
+                              : item}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ))}
+            </View>
           )}
 
-          {mouse.mode === 'touchpad' && mouse.pointerStatus ? (
-            <Text style={styles.statusText}>{mouse.pointerStatus}</Text>
-          ) : null}
-
-          <View style={styles.sensitivityRow}>
-            <Text style={styles.sensitivityLabel}>الحساسية</Text>
+          <View
+            style={[
+              styles.dpadOuter,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="تقليل حساسية الماوس"
-              onPress={() =>
-                mouse.setSensitivity(
-                  Math.max(0.2, Number((mouse.sensitivity - 0.2).toFixed(1))),
-                )
-              }
-              style={styles.sensitivityButton}
+              accessibilityLabel="أعلى"
+              onPress={() => onSendKey('up')}
+              style={styles.dpadTop}
             >
-              <Ionicons name="remove" size={18} color="#F8FAFC" />
+              <Ionicons name="chevron-up" size={26} color={colors.text} />
             </Pressable>
-            <Text style={styles.sensitivityValue}>
-              {mouse.sensitivity.toFixed(1)}
-            </Text>
+
+            <View style={styles.dpadMiddleRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="يسار"
+                onPress={() => onSendKey('left')}
+                style={styles.dpadSide}
+              >
+                <Ionicons name="chevron-back" size={26} color={colors.text} />
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="موافق"
+                onPress={() => onSendKey('ok')}
+                style={[styles.okButton, { backgroundColor: ACCENT }]}
+              >
+                <Text style={styles.okButtonText}>OK</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="يمين"
+                onPress={() => onSendKey('right')}
+                style={styles.dpadSide}
+              >
+                <Ionicons
+                  name="chevron-forward"
+                  size={26}
+                  color={colors.text}
+                />
+              </Pressable>
+            </View>
+
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="زيادة حساسية الماوس"
-              onPress={() =>
-                mouse.setSensitivity(
-                  Math.min(3, Number((mouse.sensitivity + 0.2).toFixed(1))),
-                )
-              }
-              style={styles.sensitivityButton}
+              accessibilityLabel="أسفل"
+              onPress={() => onSendKey('down')}
+              style={styles.dpadBottom}
             >
-              <Ionicons name="add" size={18} color="#F8FAFC" />
+              <Ionicons name="chevron-down" size={26} color={colors.text} />
             </Pressable>
           </View>
-        </View>
-      ) : (
-        <>
-          <View style={styles.unifiedControlCard}>
-            <View style={styles.verticalPill}>
+
+          <View style={styles.navRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="رجوع"
+              onPress={() => onSendKey('back')}
+              style={[
+                styles.navPill,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons name="arrow-back" size={19} color={colors.text} />
+              <Text style={[styles.navPillText, { color: colors.text }]}>
+                رجوع
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="الرئيسية"
+              onPress={() => onSendKey('home')}
+              style={[
+                styles.navPill,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons name="home-outline" size={19} color={ACCENT} />
+              <Text style={[styles.navPillText, { color: colors.text }]}>
+                الرئيسية
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="القائمة"
+              onPress={() => onSendKey('menu')}
+              style={[
+                styles.navPill,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons name="menu-outline" size={19} color={colors.text} />
+              <Text style={[styles.navPillText, { color: colors.text }]}>
+                القائمة
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.rockersRow}>
+            <View
+              style={[
+                styles.rockerCard,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="رفع الصوت"
                 onPress={() => onSendKey('volumeUp')}
-                style={styles.pillHalfButton}
+                style={styles.rockerHalf}
               >
-                <Ionicons name="add" size={22} color="#F8FAFC" />
+                <Ionicons name="add" size={22} color={colors.text} />
               </Pressable>
-              <Text style={styles.pillCenterTag}>VOL</Text>
+              <Text style={[styles.rockerLabel, { color: colors.secondary }]}>
+                VOL
+              </Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="خفض الصوت"
                 onPress={() => onSendKey('volumeDown')}
-                style={styles.pillHalfButton}
+                style={styles.rockerHalf}
               >
-                <Ionicons name="remove" size={22} color="#F8FAFC" />
+                <Ionicons name="remove" size={22} color={colors.text} />
               </Pressable>
             </View>
 
-            <View style={styles.dpadOuter}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="أعلى"
-                onPress={() => onSendKey('up')}
-                style={styles.dpadArrowTop}
-              >
-                <Ionicons name="chevron-up" size={24} color="#F8FAFC" />
-              </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="البحث الصوتي"
+              onPress={() => onSendKey('voice')}
+              style={[
+                styles.voiceButton,
+                { backgroundColor: colors.cardAlt, borderColor: ACCENT },
+              ]}
+            >
+              <Ionicons name="mic-outline" size={24} color={ACCENT} />
+              <Text style={[styles.voiceLabel, { color: ACCENT }]}>صوت</Text>
+            </Pressable>
 
-              <View style={styles.dpadMidRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="يسار"
-                  onPress={() => onSendKey('left')}
-                  style={styles.dpadArrowSide}
-                >
-                  <Ionicons name="chevron-back" size={24} color="#F8FAFC" />
-                </Pressable>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="موافق"
-                  onPress={() => onSendKey('ok')}
-                  style={styles.okButton}
-                >
-                  <Text style={styles.okButtonLabel}>OK</Text>
-                </Pressable>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="يمين"
-                  onPress={() => onSendKey('right')}
-                  style={styles.dpadArrowSide}
-                >
-                  <Ionicons name="chevron-forward" size={24} color="#F8FAFC" />
-                </Pressable>
-              </View>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="أسفل"
-                onPress={() => onSendKey('down')}
-                style={styles.dpadArrowBottom}
-              >
-                <Ionicons name="chevron-down" size={24} color="#F8FAFC" />
-              </Pressable>
-            </View>
-
-            <View style={styles.verticalPill}>
+            <View
+              style={[
+                styles.rockerCard,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="القناة التالية"
                 onPress={() => onSendKey('channelUp')}
-                style={styles.pillHalfButton}
+                style={styles.rockerHalf}
               >
-                <Ionicons name="chevron-up" size={21} color="#F8FAFC" />
+                <Ionicons name="chevron-up" size={22} color={colors.text} />
               </Pressable>
-              <Text style={styles.pillCenterTag}>CH</Text>
+              <Text style={[styles.rockerLabel, { color: colors.secondary }]}>
+                CH
+              </Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="القناة السابقة"
                 onPress={() => onSendKey('channelDown')}
-                style={styles.pillHalfButton}
+                style={styles.rockerHalf}
               >
-                <Ionicons name="chevron-down" size={21} color="#F8FAFC" />
+                <Ionicons name="chevron-down" size={22} color={colors.text} />
               </Pressable>
             </View>
           </View>
 
-          <View style={styles.dockRow}>
+          <View style={styles.appsSection}>
+            <Text style={[styles.appsTitle, { color: colors.secondary }]}>
+              التطبيقات السريعة (Bluetooth HID)
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.appsRow}
+            >
+              {apps.map((app) => (
+                <Pressable
+                  key={app.id}
+                  accessibilityRole="button"
+                  onPress={() => onLaunchApp(app.packageName)}
+                  style={[
+                    styles.appChip,
+                    {
+                      backgroundColor: colors.card,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                >
+                  <Ionicons name={app.icon} size={18} color={ACCENT} />
+                  <Text style={[styles.appChipText, { color: colors.text }]}>
+                    {app.name}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </ScrollView>
+      ) : (
+        <View style={styles.mouseContainer}>
+          <View style={styles.mouseModeRow}>
+            {(['touchpad', 'air'] as const).map((m) => {
+              const selected = mouse.mode === m;
+              return (
+                <Pressable
+                  key={m}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  onPress={() => mouse.setMode(m)}
+                  style={[
+                    styles.mouseModePill,
+                    {
+                      backgroundColor: selected ? ACCENT : colors.card,
+                      borderColor: selected ? ACCENT : colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.mouseModeText,
+                      { color: selected ? '#0A1012' : colors.text },
+                    ]}
+                  >
+                    {m === 'touchpad' ? 'لوحة لمس' : 'ماوس هوائي (Gyro)'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View
+            {...touchpadResponder.panHandlers}
+            style={[
+              styles.touchpadArea,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <Ionicons
+              name={
+                mouse.mode === 'air'
+                  ? 'navigate-circle-outline'
+                  : 'finger-print-outline'
+              }
+              size={34}
+              color={ACCENT}
+            />
+            <Text style={[styles.touchpadStatus, { color: colors.text }]}>
+              {mouse.mode === 'air' ? mouse.airStatus : mouse.pointerStatus}
+            </Text>
+            <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
+              اسحب لتحريك المؤشر · اضغط للنقر
+            </Text>
+          </View>
+
+          <View style={styles.mouseButtonsRow}>
             <Pressable
               accessibilityRole="button"
-              onPress={() => onSendKey('power')}
-              style={[styles.dockButton, styles.powerDockButton]}
+              onPress={mouse.onTouchpadPress}
+              style={[
+                styles.mouseActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
             >
-              <Ionicons name="power" size={18} color="#FCA5A5" />
-              <Text style={[styles.dockText, styles.powerDockText]}>Power</Text>
+              <Text style={[styles.mouseActionText, { color: colors.text }]}>
+                نقر يسار
+              </Text>
             </Pressable>
 
             <Pressable
               accessibilityRole="button"
-              onPress={() => onSendKey('back')}
-              style={styles.dockButton}
+              onPress={mouse.onRightClick}
+              style={[
+                styles.mouseActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
             >
-              <Ionicons name="arrow-back" size={18} color="#E2E8F0" />
-              <Text style={styles.dockText}>Back</Text>
+              <Text style={[styles.mouseActionText, { color: colors.text }]}>
+                رجوع / يمين
+              </Text>
             </Pressable>
 
             <Pressable
               accessibilityRole="button"
-              onPress={() => onSendKey('home')}
-              style={[styles.dockButton, styles.homeDockButton]}
+              onPress={mouse.onRecenter}
+              style={[
+                styles.mouseActionButton,
+                { backgroundColor: colors.cardAlt, borderColor: ACCENT },
+              ]}
             >
-              <Ionicons name="home" size={18} color="#0A1012" />
-              <Text style={[styles.dockText, styles.homeDockText]}>Home</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => onSendKey('mute')}
-              style={styles.dockButton}
-            >
-              <Ionicons name="volume-mute" size={18} color="#E2E8F0" />
-              <Text style={styles.dockText}>Mute</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => onSendKey('menu')}
-              style={styles.dockButton}
-            >
-              <Ionicons name="apps-outline" size={18} color="#E2E8F0" />
-              <Text style={styles.dockText}>Menu</Text>
+              <Text style={[styles.mouseActionText, { color: ACCENT }]}>
+                توسيط
+              </Text>
             </Pressable>
           </View>
-        </>
+
+          <View style={styles.scrollControlsRow}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => mouse.onScroll(-30)}
+              style={[
+                styles.scrollButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons name="arrow-up" size={17} color={colors.text} />
+              <Text style={[styles.scrollButtonText, { color: colors.text }]}>
+                تمرير لأعلى
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => mouse.onScroll(30)}
+              style={[
+                styles.scrollButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons name="arrow-down" size={17} color={colors.text} />
+              <Text style={[styles.scrollButtonText, { color: colors.text }]}>
+                تمرير لأسفل
+              </Text>
+            </Pressable>
+          </View>
+        </View>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
+  container: {
     flex: 1,
+  },
+  modeSwitcher: {
+    flexDirection: 'row',
+    gap: 6,
+    marginHorizontal: 14,
+    marginTop: 4,
+    marginBottom: 8,
+    padding: 4,
+    borderWidth: 1,
+    borderRadius: 16,
+  },
+  modeButton: {
+    flex: 1,
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: 12,
+  },
+  modeButtonText: {
+    fontSize: 12,
+    fontWeight: '800',
   },
   scrollContent: {
     paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 24,
+    paddingBottom: 16,
     gap: 12,
   },
-  topControls: {
+  topActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
-  },
-  modeToggleGroup: {
-    flexDirection: 'row',
-    backgroundColor: '#11191C',
-    borderRadius: 13,
-    padding: 3,
-    gap: 3,
-  },
-  modeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
-    borderRadius: 10,
-  },
-  modeButtonActive: {
-    backgroundColor: '#7CE3C3',
-  },
-  modeButtonText: {
-    color: '#94A3B8',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  modeButtonTextActive: {
-    color: '#0A1012',
-    fontWeight: '800',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-  quickActionButton: {
-    minHeight: 38,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 11,
-    borderRadius: 12,
-    backgroundColor: '#11191C',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  quickActionText: {
-    color: '#E2E8F0',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  iconButton: {
-    width: 38,
-    height: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 12,
-    backgroundColor: '#11191C',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  mouseDeck: {
-    backgroundColor: '#11191C',
-    borderRadius: 18,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#1E293B',
     gap: 10,
   },
-  mouseHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  mouseModeGroup: {
-    flexDirection: 'row',
-    backgroundColor: '#0A1012',
-    borderRadius: 12,
-    padding: 3,
-    gap: 4,
-  },
-  mouseModeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-    borderRadius: 9,
-  },
-  mouseModeButtonActive: {
-    backgroundColor: '#7CE3C3',
-  },
-  disabledButton: {
-    opacity: 0.45,
-  },
-  mouseModeText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  mouseModeTextActive: {
-    color: '#0A1012',
-    fontWeight: '800',
-  },
-  mouseTools: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  toolIconButton: {
-    width: 34,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    backgroundColor: '#0A1012',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  padSurface: {
-    height: 150,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    borderRadius: 14,
-    backgroundColor: '#0A1012',
-    borderWidth: 1,
-    borderColor: '#1E2D33',
-  },
-  expandedPadSurface: {
-    height: 220,
-  },
-  pointerDot: {
-    position: 'absolute',
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#7CE3C3',
-    opacity: 0.9,
-  },
-  padCaption: {
-    color: '#64748B',
-    fontSize: 11,
-    textAlign: 'center',
-    paddingHorizontal: 12,
-  },
-  statusText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    textAlign: 'center',
-  },
-  sensitivityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-  },
-  sensitivityLabel: {
-    color: '#CBD5E1',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  sensitivityButton: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    backgroundColor: '#172226',
-    borderWidth: 1,
-    borderColor: '#233137',
-  },
-  sensitivityValue: {
-    minWidth: 28,
-    color: '#7CE3C3',
-    fontSize: 13,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  unifiedControlCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#11191C',
-    borderRadius: 22,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  verticalPill: {
-    width: 50,
-    height: 158,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderRadius: 25,
-    backgroundColor: '#0A1012',
-    borderWidth: 1,
-    borderColor: '#1E293B',
-  },
-  pillHalfButton: {
-    width: 44,
+  powerButton: {
+    width: 48,
     height: 48,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#2A1215',
+    borderWidth: 1,
+    borderRadius: 24,
   },
-  pillCenterTag: {
-    color: '#7CE3C3',
-    fontSize: 10,
+  circleActionButton: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 24,
+  },
+  numpadToggleText: {
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  numpadCard: {
+    padding: 10,
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 18,
+  },
+  numpadRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  numpadKey: {
+    flex: 1,
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  numpadKeyText: {
+    fontSize: 13,
     fontWeight: '800',
-    letterSpacing: 0.5,
   },
   dpadOuter: {
-    width: 172,
-    height: 172,
+    alignSelf: 'center',
+    width: 214,
+    height: 214,
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 8,
-    borderRadius: 86,
-    backgroundColor: '#0A1012',
+    padding: 12,
     borderWidth: 1,
-    borderColor: '#1E293B',
+    borderRadius: 107,
   },
-  dpadArrowTop: {
-    width: 52,
-    height: 42,
+  dpadTop: {
+    width: 64,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dpadArrowBottom: {
-    width: 52,
-    height: 42,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dpadMidRow: {
+  dpadMiddleRow: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  dpadArrowSide: {
-    width: 42,
-    height: 52,
+  dpadSide: {
+    width: 44,
+    height: 64,
     alignItems: 'center',
     justifyContent: 'center',
   },
   okButton: {
-    width: 64,
-    height: 64,
+    width: 74,
+    height: 74,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 32,
-    backgroundColor: '#7CE3C3',
+    borderRadius: 37,
   },
-  okButtonLabel: {
+  okButtonText: {
     color: '#0A1012',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '900',
   },
-  dockRow: {
-    flexDirection: 'row',
-    gap: 6,
+  dpadBottom: {
+    width: 64,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  dockButton: {
+  navRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  navPill: {
     flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  navPillText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  rockersRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  rockerCard: {
+    flex: 1,
+    height: 112,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderRadius: 22,
+  },
+  rockerHalf: {
+    width: '100%',
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rockerLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+  },
+  voiceButton: {
+    width: 72,
+    height: 72,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 3,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: '#11191C',
     borderWidth: 1,
-    borderColor: '#1E293B',
+    borderRadius: 36,
   },
-  homeDockButton: {
-    backgroundColor: '#7CE3C3',
-    borderColor: '#7CE3C3',
-  },
-  powerDockButton: {
-    backgroundColor: '#181115',
-    borderColor: '#3F1D24',
-  },
-  dockText: {
-    color: '#CBD5E1',
+  voiceLabel: {
     fontSize: 10,
-    fontWeight: '700',
-  },
-  homeDockText: {
-    color: '#0A1012',
     fontWeight: '800',
   },
-  powerDockText: {
-    color: '#FCA5A5',
+  appsSection: {
+    gap: 6,
+  },
+  appsTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  appsRow: {
+    gap: 8,
+  },
+  appChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  appChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  mouseContainer: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    gap: 10,
+  },
+  mouseModeRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  mouseModePill: {
+    flex: 1,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  mouseModeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  touchpadArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    padding: 16,
+    borderWidth: 1,
+    borderRadius: 22,
+  },
+  touchpadStatus: {
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  touchpadHint: {
+    fontSize: 11,
+    textAlign: 'center',
+  },
+  mouseButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  mouseActionButton: {
+    flex: 1,
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 13,
+  },
+  mouseActionText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  scrollControlsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  scrollButton: {
+    flex: 1,
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 13,
+  },
+  scrollButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
   },
 });

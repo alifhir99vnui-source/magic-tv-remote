@@ -1,939 +1,1729 @@
-import React, { useEffect, useState } from 'react';
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Gyroscope } from 'expo-sensors';
+import * as Network from 'expo-network';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  AppState,
+  AppStateStatus,
   FlatList,
+  Keyboard,
   Modal,
-  NativeEventEmitter,
   NativeModules,
+  Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { RemoteExperience } from '../components/RemoteExperience';
+import * as Haptics from 'expo-haptics';
+import {
+  RemoteAppShortcut,
+  RemoteExperience,
+  RemoteMouseController,
+} from '../components/RemoteExperience';
 
-const MagicControl = NativeModules.MagicControlModule || NativeModules.MagicControl;
+const STORAGE_KEY = '@magic_tv_remote_state_v2';
+const LEGACY_STORAGE_KEY = '@magic_tv_remote_state_v1';
 
-const TV_APPS_LIST = [
-  { id: 'yt', name: 'YouTube', pkg: 'com.google.android.youtube.tv', icon: 'logo-youtube', color: '#EF4444' },
-  { id: 'cs', name: 'CloudStream', pkg: 'com.lagradost.cloudstream3', icon: 'cloud-outline', color: '#38BDF8' },
-  { id: 'stremio', name: 'Stremio', pkg: 'com.stremio.one', icon: 'play-circle-outline', color: '#A855F7' },
-  { id: 'kodi', name: 'Kodi', pkg: 'org.xbmc.kodi', icon: 'cube-outline', color: '#0EA5E9' },
-  { id: 'netflix', name: 'Netflix', pkg: 'com.netflix.ninja', icon: 'film-outline', color: '#DC2626' },
-  { id: 'shahid', name: 'Shahid', pkg: 'net.mbc.shahid', icon: 'tv-outline', color: '#10B981' },
-  { id: 'iptv', name: 'Live TV / IPTV', pkg: 'com.nst.iptvsmarterstvbox', icon: 'radio-outline', color: '#F59E0B' },
-  { id: 'settings', name: 'Android Settings', pkg: 'com.android.tv.settings', icon: 'settings-outline', color: '#94A3B8' },
-];
-
-interface TvBrandProfile {
+interface SavedDevice {
   id: string;
   name: string;
-  protocol: 'NEC' | 'SAMSUNG' | 'SONY';
-  freq: number;
-  address: string;
-  keys: Record<string, string>;
+  ip: string;
+  port: number;
+  protocol: 'adb' | 'ws' | 'http';
+  transport?: 'wifi' | 'bluetooth';
+  bluetoothMac?: string;
+  lastSeen?: string;
+  model?: string;
 }
 
-const TV_BRANDS: TvBrandProfile[] = [
-  {
-    id: 'magic_a200', name: 'Magic A200', protocol: 'NEC', freq: 38000, address: '0xFE01',
-    keys: {
-      power: '0x14', mute: '0x0D', info: '0x1C', menu: '0x4D', settings: '0x4D',
-      up: '0x16', down: '0x1A', left: '0x51', right: '0x50', ok: '0x13',
-      back: '0x19', home: '0x11', volumeUp: '0x18', volumeDown: '0x10', voice: '0x42',
-      num0: '0x00', num1: '0x01', num2: '0x02', num3: '0x03', num4: '0x04',
-      num5: '0x05', num6: '0x06', num7: '0x07', num8: '0x08', num9: '0x09',
-    },
-  },
-  {
-    id: 'samsung', name: 'Samsung', protocol: 'SAMSUNG', freq: 38000, address: '0x0707',
-    keys: {
-      power: '0x02', mute: '0x0F', info: '0x1F', menu: '0x1A', settings: '0x1A',
-      up: '0x60', down: '0x61', left: '0x65', right: '0x62', ok: '0x68',
-      back: '0x58', home: '0x79', volumeUp: '0x07', volumeDown: '0x0B', voice: '0x68',
-      num0: '0x11', num1: '0x04', num2: '0x05', num3: '0x06', num4: '0x08',
-      num5: '0x09', num6: '0x0A', num7: '0x0C', num8: '0x0D', num9: '0x0E',
-    },
-  },
-  {
-    id: 'lg', name: 'LG', protocol: 'NEC', freq: 38000, address: '0xFB04',
-    keys: {
-      power: '0x08', mute: '0x09', info: '0xAA', menu: '0x43', settings: '0x43',
-      up: '0x40', down: '0x41', left: '0x07', right: '0x06', ok: '0x44',
-      back: '0x28', home: '0x7C', volumeUp: '0x02', volumeDown: '0x03', voice: '0x44',
-      num0: '0x10', num1: '0x11', num2: '0x12', num3: '0x13', num4: '0x14',
-      num5: '0x15', num6: '0x16', num7: '0x17', num8: '0x18', num9: '0x19',
-    },
-  },
-  {
-    id: 'sony', name: 'Sony', protocol: 'SONY', freq: 40000, address: '0x01',
-    keys: {
-      power: '0x15', mute: '0x14', info: '0x3A', menu: '0x60', settings: '0x60',
-      up: '0x74', down: '0x75', left: '0x34', right: '0x33', ok: '0x65',
-      back: '0x23', home: '0x60', volumeUp: '0x12', volumeDown: '0x13', voice: '0x65',
-      num0: '0x09', num1: '0x00', num2: '0x01', num3: '0x02', num4: '0x03',
-      num5: '0x04', num6: '0x05', num7: '0x06', num8: '0x07', num9: '0x08',
-    },
-  },
-  {
-    id: 'tcl', name: 'TCL', protocol: 'NEC', freq: 38000, address: '0xDF00',
-    keys: {
-      power: '0x1C', mute: '0x10', info: '0x0F', menu: '0x0A', settings: '0x0A',
-      up: '0x1A', down: '0x1E', left: '0x1B', right: '0x1F', ok: '0x0D',
-      back: '0x1D', home: '0x14', volumeUp: '0x18', volumeDown: '0x19', voice: '0x0D',
-      num0: '0x00', num1: '0x01', num2: '0x02', num3: '0x03', num4: '0x04',
-      num5: '0x05', num6: '0x06', num7: '0x07', num8: '0x08', num9: '0x09',
-    },
-  },
-  {
-    id: 'hisense', name: 'Hisense', protocol: 'NEC', freq: 38000, address: '0xBF00',
-    keys: {
-      power: '0x0D', mute: '0x0E', info: '0x16', menu: '0x14', settings: '0x14',
-      up: '0x16', down: '0x17', left: '0x19', right: '0x18', ok: '0x15',
-      back: '0x48', home: '0x49', volumeUp: '0x44', volumeDown: '0x43', voice: '0x15',
-      num0: '0x00', num1: '0x01', num2: '0x02', num3: '0x03', num4: '0x04',
-      num5: '0x05', num6: '0x06', num7: '0x07', num8: '0x08', num9: '0x09',
-    },
-  },
-  {
-    id: 'xiaomi', name: 'Xiaomi Box', protocol: 'NEC', freq: 38000, address: '0xFF00',
-    keys: {
-      power: '0x0C', mute: '0x0E', info: '0x12', menu: '0x13', settings: '0x13',
-      up: '0x01', down: '0x02', left: '0x03', right: '0x04', ok: '0x05',
-      back: '0x06', home: '0x07', volumeUp: '0x08', volumeDown: '0x09', voice: '0x0A',
-      num0: '0x10', num1: '0x11', num2: '0x12', num3: '0x13', num4: '0x14',
-      num5: '0x15', num6: '0x16', num7: '0x17', num8: '0x18', num9: '0x19',
-    },
-  },
-  {
-    id: 'starsat', name: 'StarSat / GX', protocol: 'NEC', freq: 38000, address: '0x7F80',
-    keys: {
-      power: '0x0A', mute: '0x0C', info: '0x1F', menu: '0x04', settings: '0x04',
-      up: '0x00', down: '0x01', left: '0x03', right: '0x02', ok: '0x1F',
-      back: '0x05', home: '0x04', volumeUp: '0x02', volumeDown: '0x03', voice: '0x1F',
-      num0: '0x10', num1: '0x11', num2: '0x12', num3: '0x13', num4: '0x14',
-      num5: '0x15', num6: '0x16', num7: '0x17', num8: '0x18', num9: '0x19',
-    },
-  },
+interface QuickCommand {
+  id: string;
+  label: string;
+  action: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}
+
+interface RemoteAppState {
+  devices: SavedDevice[];
+  activeDeviceId: string | null;
+  hapticsEnabled: boolean;
+  mouseSensitivity: number;
+  autoConnect: boolean;
+  quickCommands: QuickCommand[];
+  customApps: RemoteAppShortcut[];
+}
+
+const DEFAULT_APPS: RemoteAppShortcut[] = [
+  { id: '1', name: 'YouTube', packageName: 'com.google.android.youtube.tv', icon: 'logo-youtube' },
+  { id: '2', name: 'Netflix', packageName: 'com.netflix.ninja', icon: 'tv-outline' },
+  { id: '3', name: 'Prime Video', packageName: 'com.amazon.amazonvideo.livingroom', icon: 'play-circle-outline' },
+  { id: '4', name: 'Shahid', packageName: 'net.mbc.shahid', icon: 'film-outline' },
+  { id: '5', name: 'Kodi', packageName: 'org.xbmc.kodi', icon: 'grid-outline' },
+  { id: '6', name: 'Plex', packageName: 'com.plexapp.android', icon: 'folder-open-outline' },
+  { id: '7', name: 'Files / APK', packageName: 'com.android.tv.settings', icon: 'settings-outline' },
+  { id: '8', name: 'Browser', packageName: 'com.android.browser', icon: 'globe-outline' },
 ];
 
-function buildIrPattern(profile: TvBrandProfile, commandHex: string): number[] {
-  const cmd = parseInt(commandHex, 16) & 0xff;
-  const addr16 = parseInt(profile.address, 16) & 0xffff;
-  if (profile.protocol === 'SONY') {
-    const addr = addr16 & 0x1f;
-    const pattern = [2400, 600];
-    for (let i = 0; i < 7; i++) pattern.push(((cmd >> i) & 1) ? 1200 : 600, 600);
-    for (let i = 0; i < 5; i++) pattern.push(((addr >> i) & 1) ? 1200 : 600, 600);
-    return pattern;
-  }
-  const lowAddr = addr16 & 0xff;
-  const highAddr = (addr16 >> 8) & 0xff;
-  const invCmd = (~cmd) & 0xff;
-  const bytes = [lowAddr, highAddr, cmd, invCmd];
-  const pattern = profile.protocol === 'SAMSUNG' ? [4500, 4500] : [9000, 4500];
-  for (const b of bytes) {
-    for (let i = 0; i < 8; i++) {
-      const bit = (b >> i) & 1;
-      pattern.push(562, bit === 1 ? 1687 : 562);
-    }
-  }
-  pattern.push(562);
-  return pattern;
+const DEFAULT_QUICK_COMMANDS: QuickCommand[] = [
+  { id: 'q1', label: 'إيقاف مؤقت / تشغيل', action: 'playPause', icon: 'play-skip-forward-outline' },
+  { id: 'q2', label: 'كتم الصوت', action: 'mute', icon: 'volume-mute-outline' },
+  { id: 'q3', label: 'قائمة التطبيقات', action: 'recents', icon: 'apps-outline' },
+  { id: 'q4', label: 'إغلاق الشاشة', action: 'sleep', icon: 'moon-outline' },
+];
+
+const INITIAL_STATE: RemoteAppState = {
+  devices: [],
+  activeDeviceId: null,
+  hapticsEnabled: true,
+  mouseSensitivity: 1.35,
+  autoConnect: true,
+  quickCommands: DEFAULT_QUICK_COMMANDS,
+  customApps: DEFAULT_APPS,
+};
+
+interface MagicHardwareBridge {
+  isPointerSupported?: () => Promise<boolean>;
+  isAirMouseSupported?: () => Promise<boolean>;
+  sendMouseMove?: (dx: number, dy: number) => Promise<boolean>;
+  sendMouseClick?: (button: 'left' | 'right') => Promise<boolean>;
+  sendMouseScroll?: (deltaY: number) => Promise<boolean>;
+  recenterPointer?: () => Promise<boolean>;
+  scanBluetoothDevices?: () => Promise<
+    Array<{ name?: string; address?: string; bondState?: string }>
+  >;
+  pairOrConnectBluetoothHid?: (address: string) => Promise<boolean>;
+  sendBluetoothHidKey?: (key: string) => Promise<boolean>;
+  sendIrKey?: (key: string) => Promise<boolean>;
+  hasIrEmitter?: () => Promise<boolean>;
 }
 
-export default function HomeScreen() {
-  const [bottomTab, setBottomTab] = useState<'remote' | 'connections' | 'ac'>('remote');
-  const [remotePage, setRemotePage] = useState<'remote' | 'mouse'>('remote');
-  const [mouseMode, setMouseMode] = useState<'touchpad' | 'air'>('touchpad');
-  const [sensitivity, setSensitivity] = useState(1.2);
-  const [selectedTvBrandId, setSelectedTvBrandId] = useState<string>('magic_a200');
-  const activeTvBrand = TV_BRANDS.find((b) => b.id === selectedTvBrandId) || TV_BRANDS[0];
+const MagicHardware: MagicHardwareBridge | undefined =
+  (NativeModules as { MagicControl?: MagicHardwareBridge }).MagicControl;
 
-  const [connectedName, setConnectedName] = useState<string | null>(null);
-  const [connectedType, setConnectedType] = useState<'Bluetooth' | 'Wi-Fi' | 'Infrared' | null>(null);
-  const [wifiScanning, setWifiScanning] = useState(false);
-  const [wifiDevices, setWifiDevices] = useState<{ name: string; ip: string }[]>([]);
-  const [wifiIp, setWifiIp] = useState('192.168.0.109');
-  const [btScanning, setBtScanning] = useState(false);
-  const [btDevices, setBtDevices] = useState<{ name: string; address: string }[]>([]);
-  const [irTarget, setIrTarget] = useState<'satellite' | 'ac'>('satellite');
-  const [customKeyMap, setCustomKeyMap] = useState<Record<string, string>>({});
-  const [necModalOpen, setNecModalOpen] = useState(false);
-  const [appsModalOpen, setAppsModalOpen] = useState(false);
+const KEYCODE_MAP: Record<string, { androidKeyCode: number; label: string }> = {
+  power: { androidKeyCode: 26, label: 'POWER' },
+  sleep: { androidKeyCode: 223, label: 'SLEEP' },
+  wakeup: { androidKeyCode: 224, label: 'WAKEUP' },
+  up: { androidKeyCode: 19, label: 'DPAD_UP' },
+  down: { androidKeyCode: 20, label: 'DPAD_DOWN' },
+  left: { androidKeyCode: 21, label: 'DPAD_LEFT' },
+  right: { androidKeyCode: 22, label: 'DPAD_RIGHT' },
+  ok: { androidKeyCode: 23, label: 'DPAD_CENTER' },
+  select: { androidKeyCode: 23, label: 'DPAD_CENTER' },
+  back: { androidKeyCode: 4, label: 'BACK' },
+  home: { androidKeyCode: 3, label: 'HOME' },
+  menu: { androidKeyCode: 82, label: 'MENU' },
+  recents: { androidKeyCode: 187, label: 'APP_SWITCH' },
+  volumeUp: { androidKeyCode: 24, label: 'VOLUME_UP' },
+  volumeDown: { androidKeyCode: 25, label: 'VOLUME_DOWN' },
+  mute: { androidKeyCode: 164, label: 'VOLUME_MUTE' },
+  channelUp: { androidKeyCode: 166, label: 'CHANNEL_UP' },
+  channelDown: { androidKeyCode: 167, label: 'CHANNEL_DOWN' },
+  playPause: { androidKeyCode: 85, label: 'MEDIA_PLAY_PAUSE' },
+  play: { androidKeyCode: 126, label: 'MEDIA_PLAY' },
+  pause: { androidKeyCode: 127, label: 'MEDIA_PAUSE' },
+  stop: { androidKeyCode: 86, label: 'MEDIA_STOP' },
+  next: { androidKeyCode: 87, label: 'MEDIA_NEXT' },
+  prev: { androidKeyCode: 88, label: 'MEDIA_PREVIOUS' },
+  fastForward: { androidKeyCode: 90, label: 'MEDIA_FAST_FORWARD' },
+  rewind: { androidKeyCode: 89, label: 'MEDIA_REWIND' },
+  voice: { androidKeyCode: 219, label: 'VOICE_ASSIST' },
+  search: { androidKeyCode: 84, label: 'SEARCH' },
+  settings: { androidKeyCode: 176, label: 'SETTINGS' },
+  info: { androidKeyCode: 165, label: 'INFO' },
+  guide: { androidKeyCode: 172, label: 'GUIDE' },
+  num0: { androidKeyCode: 7, label: '0' },
+  num1: { androidKeyCode: 8, label: '1' },
+  num2: { androidKeyCode: 9, label: '2' },
+  num3: { androidKeyCode: 10, label: '3' },
+  num4: { androidKeyCode: 11, label: '4' },
+  num5: { androidKeyCode: 12, label: '5' },
+  num6: { androidKeyCode: 13, label: '6' },
+  num7: { androidKeyCode: 14, label: '7' },
+  num8: { androidKeyCode: 15, label: '8' },
+  num9: { androidKeyCode: 16, label: '9' },
+  enter: { androidKeyCode: 66, label: 'ENTER' },
+  del: { androidKeyCode: 67, label: 'DEL' },
+  red: { androidKeyCode: 183, label: 'PROG_RED' },
+  green: { androidKeyCode: 184, label: 'PROG_GREEN' },
+  yellow: { androidKeyCode: 185, label: 'PROG_YELLOW' },
+  blue: { androidKeyCode: 186, label: 'PROG_BLUE' },
+};
 
-  const [acPower, setAcPower] = useState(false);
-  const [acTemp, setAcTemp] = useState(24);
-  const LAST_TV_IP_KEY = "@magic_tv_last_ip";
-  useEffect(() => { (async () => { try { const savedIp = await AsyncStorage.getItem(LAST_TV_IP_KEY); if (savedIp && savedIp.trim().length >= 7) { const clean = savedIp.trim(); setWifiIp(clean); MagicControl?.connectTvIp?.(clean).catch(() => {}); MagicControl?.sendTvKey?.(clean, "ping").catch(() => {}); } } catch (_e) {} })(); }, []);
-  useEffect(() => { if (wifiIp && wifiIp.trim().length >= 7) { AsyncStorage.setItem(LAST_TV_IP_KEY, wifiIp.trim()).catch(() => {}); } }, [wifiIp]);
-  const dispatchAcIrSignal = (tag = "ac") => { const freq = 38000; const pattern = tag === "power" ? "9000,4500,560,1690,560,560" : "9000,4500,560,560,560,1690"; MagicControl?.sendIrCode?.(freq, pattern).catch(() => {}); };
-  const sendIrRaw = (freq = 38000, pattern = "9000,4500,560,560") => MagicControl?.sendIrCode?.(freq, pattern).catch(() => {});
-  const openTvOnlySettings = () => { const ip = (wifiIp || "192.168.0.109").trim(); MagicControl?.sendTvKey?.(ip, "settings").catch(() => {}); MagicControl?.launchTvAppOnIp?.(ip, "com.android.tv.settings").catch(() => {}); MagicControl?.launchTvAppOnIp?.(ip, "com.android.settings").catch(() => {}); };
-  const [tvMouseMode, setTvMouseMode] = useState(false);
-  const [tvMicMode, setTvMicMode] = useState(false);
-  const triggerTvMouse = () => { const next = !tvMouseMode; setTvMouseMode(next); MagicControl?.sendTvKey?.(wifiIp || "192.168.0.109", "mouse").catch(() => {}); MagicControl?.sendBluetoothKey?.("mouse").catch(() => {}); };
-  const triggerTvMic = () => { const next = !tvMicMode; setTvMicMode(next); MagicControl?.sendTvKey?.(wifiIp || "192.168.0.109", "mic").catch(() => {}); MagicControl?.sendBluetoothKey?.("mic").catch(() => {}); };
-  const [tvInstalledApps, setTvInstalledApps] = useState<Array<{ pkg: string; label: string }>>([]);
-  const [loadingTvApps, setLoadingTvApps] = useState(false);
-  const openConnectedTvApps = async () => { if (!wifiIp || wifiIp.trim().length < 7) { if (typeof setStatusMessage === "function") setStatusMessage("Connect to TV or TV Box first to view apps"); return; } setAppsModalOpen(true); setLoadingTvApps(true); try { const res = await MagicControl?.getInstalledTvApps?.(wifiIp.trim()); setTvInstalledApps(Array.isArray(res) ? res : []); } catch (_e) { setTvInstalledApps([]); } finally { setLoadingTvApps(false); } };
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [lang, setLang] = useState<'ar' | 'en'>('ar');
-  const [themeMode, setThemeMode] = useState<'dark' | 'light'>('dark');
-  const [accentColor, setAccentColor] = useState('#7CE3C3');
+function isValidIpv4(ip: string): boolean {
+  const parts = ip.trim().split('.');
+  if (parts.length !== 4) return false;
+  return parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) return false;
+    const num = Number(part);
+    return num >= 0 && num <= 255;
+  });
+}
 
-  const ACCENT_PALETTE = [
-    { id: 'mint', color: '#7CE3C3', ar: 'فيروزي نعناعي', en: 'Mint' },
-    { id: 'sky', color: '#38BDF8', ar: 'أزرق سماوي', en: 'Sky Blue' },
-    { id: 'emerald', color: '#34D399', ar: 'أخضر زمردي', en: 'Emerald' },
-    { id: 'purple', color: '#A78BFA', ar: 'بنفسجي ملكي', en: 'Royal Purple' },
-    { id: 'gold', color: '#FBBF24', ar: 'ذهبي دافئ', en: 'Warm Gold' },
-    { id: 'rose', color: '#FB7185', ar: 'وردي مرجاني', en: 'Coral Rose' },
+function getSubnetPrefix(ip: string | null | undefined): string | null {
+  if (!ip || !isValidIpv4(ip)) return null;
+  const parts = ip.trim().split('.');
+  if (parts[0] === '127' || parts[0] === '0' || parts[0] === '169') return null;
+  return `${parts[0]}.${parts[1]}.${parts[2]}`;
+}
+
+async function probeTvHost(
+  ip: string,
+  port: number,
+  protocol: 'adb' | 'ws' | 'http',
+  timeoutMs = 650,
+): Promise<{ reachable: boolean; name?: string; model?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const portsToCheck = Array.from(new Set([port, 5555, 8090, 8008, 7676, 80]));
+
+  try {
+    for (const candidatePort of portsToCheck) {
+      const url = `http://${ip}:${candidatePort}/`;
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        const text = await res.text().catch(() => '');
+        const isMagic =
+          /magic|a200|android|tv|leanback|bravia|roku|chromecast|adb/i.test(text);
+        if (res.status > 0 || isMagic) {
+          clearTimeout(timer);
+          return {
+            reachable: true,
+            name: isMagic ? 'Magic A200 Pro TV' : `جهاز شبكة (${ip})`,
+            model:
+              candidatePort === 5555
+                ? `ADB:${candidatePort} (${protocol.toUpperCase()})`
+                : `Port ${candidatePort}`,
+          };
+        }
+      } catch {
+        // Continue checking candidate ports
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return { reachable: false };
+}
+
+async function sendCommandToTv(
+  device: SavedDevice,
+  payload: Record<string, unknown>,
+  timeoutMs = 1500,
+): Promise<{ ok: boolean; detail: string }> {
+  if (device.transport === 'bluetooth' && MagicHardware?.sendBluetoothHidKey) {
+    try {
+      const sent = await MagicHardware.sendBluetoothHidKey(String(payload.key ?? ''));
+      if (sent) {
+        return { ok: true, detail: `Bluetooth HID (${device.name})` };
+      }
+    } catch {
+      // Fallback to network attempt
+    }
+  }
+
+  if (MagicHardware?.sendIrKey && payload.type === 'key') {
+    try {
+      const irSent = await MagicHardware.sendIrKey(String(payload.key ?? ''));
+      if (irSent) {
+        return { ok: true, detail: `IR Emitter (${device.name})` };
+      }
+    } catch {
+      // Fallback to network attempt
+    }
+  }
+
+  const endpoints = [
+    `http://${device.ip}:${device.port}/remote/command`,
+    `http://${device.ip}:${device.port}/api/command`,
+    `http://${device.ip}:8090/remote/command`,
+    `http://${device.ip}:5555/command`,
   ];
 
-  const isAr = lang === 'ar';
-  const isDark = themeMode === 'dark';
-  const ui = {
-    bg: isDark ? '#0A1012' : '#F1F5F9',
-    card: isDark ? '#11191C' : '#FFFFFF',
-    cardAlt: isDark ? '#182629' : '#E2E8F0',
-    border: isDark ? '#1D2B30' : '#CBD5E1',
-    text: isDark ? '#F8FAFC' : '#0F172A',
-    sub: isDark ? '#94A3B8' : '#475569',
-  };
-  const [acMode, setAcMode] = useState<'Auto' | 'Cool' | 'Heat' | 'Dry' | 'Fan'>('Auto');
-  const [acFan, setAcFan] = useState<'Auto' | 'Low' | 'Medium' | 'High'>('Auto');
-  const [acBrand, setAcBrand] = useState('Tosot');
-  const [acSwing, setAcSwing] = useState(false);
-  const [acTurbo, setAcTurbo] = useState(false);
-  const [acSleep, setAcSleep] = useState(false);
-
-  useEffect(() => {
-    if (!MagicControl) return;
-    const emitter = new NativeEventEmitter(MagicControl);
-    const subBt = emitter.addListener('onBluetoothDeviceFound', (dev: any) => {
-      if (dev?.address) {
-        setBtDevices((prev) =>
-          prev.some((d) => d.address === dev.address)
-            ? prev
-            : [...prev, { name: dev.name || 'MAGIC_A200', address: dev.address }]
-        );
-      }
-    });
-    const subWifi = emitter.addListener('onWifiDeviceFound', (dev: any) => {
-      if (dev?.ip || dev?.host) {
-        const ip = dev.ip || dev.host;
-        setWifiDevices((prev) =>
-          prev.some((d) => d.ip === ip) ? prev : [...prev, { name: dev.name || 'Android TV Box', ip }]
-        );
-      }
-    });
-    const subStatus = emitter.addListener('onConnectionStatus', (st: any) => {
-      if (st?.status === 'connected') {
-        setConnectedName(st.deviceName || 'MAGIC_A200');
-        setConnectedType('Bluetooth');
-      }
-    });
-    return () => { subBt.remove(); subWifi.remove(); subStatus.remove(); };
-  }, []);
-
-  useEffect(() => {
-    if (!MagicControl) return;
-    if (bottomTab === 'remote' && remotePage === 'mouse' && mouseMode === 'air') {
-      MagicControl.startGyroscope?.().catch(() => {});
-    } else {
-      MagicControl.stopGyroscope?.();
-    }
-  }, [bottomTab, remotePage, mouseMode]);
-
-  const handleSendKey = (key: string) => {
-    const cmdHex = customKeyMap[key] || activeTvBrand.keys[key];
-    if (cmdHex) {
-      const pattern = buildIrPattern(activeTvBrand, cmdHex);
-      MagicControl?.transmitIr?.(activeTvBrand.freq, pattern).catch(() => {});
-    }
-    MagicControl?.sendBluetoothKey?.(key).catch(() => {});
-  };
-
-  const handleDiscoverWifi = async () => {
-    setWifiScanning(true);
-    setWifiDevices([]);
+  for (const endpoint of endpoints) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const info = await MagicControl?.getNetworkInfo?.();
-      if (info?.ip && MagicControl?.scanWifiDevices) {
-        const parts = String(info.ip).split(".");
-        if (parts.length === 4) {
-          const prefix = parts.slice(0, 3).join(".");
-          const scanned = await MagicControl.scanWifiDevices(prefix).catch(() => []);
-          if (Array.isArray(scanned) && scanned.length > 0 && typeof setDiscoveredDevices === "function") {
-            setDiscoveredDevices(scanned);
-          }
-        }
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Remote-Client': 'MagicTVRemote/2.0',
+        },
+        body: JSON.stringify({
+          ...payload,
+          protocol: device.protocol,
+          timestamp: Date.now(),
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (response.ok || response.status === 204) {
+        return { ok: true, detail: `${device.ip}:${device.port}` };
       }
-      const myIp: string = info?.ip || "";
-      const ssid: string = info?.ssid || "Wi-Fi Network";
-      if (!myIp || !myIp.includes(".")) {
-        setWifiScanning(false);
+    } catch {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    ok: false,
+    detail: `تعذر الوصول إلى ${device.ip}:${device.port}`,
+  };
+}
+export default function MagicTvRemoteScreen() {
+  const insets = useSafeAreaInsets();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme !== 'light';
+
+  const colors = useMemo(
+    () =>
+      isDark
+        ? {
+            background: '#080C0E',
+            card: '#11181C',
+            cardAlt: '#172127',
+            border: '#223038',
+            text: '#F2F7F9',
+            secondary: '#8FA2AC',
+            input: '#0D1316',
+          }
+        : {
+            background: '#F3F6F8',
+            card: '#FFFFFF',
+            cardAlt: '#E9EFF3',
+            border: '#D4DFE6',
+            text: '#0F171A',
+            secondary: '#5B6D77',
+            input: '#F7FAFC',
+          },
+    [isDark],
+  );
+
+  const [state, setState] = useState<RemoteAppState>(INITIAL_STATE);
+  const [hydrated, setHydrated] = useState(false);
+
+  const [activeTab, setActiveTab] = useState<'remote' | 'mouse'>('remote');
+  const [connectionStatus, setConnectionStatus] = useState<
+    'disconnected' | 'connecting' | 'connected'
+  >('disconnected');
+  const [lastFeedback, setLastFeedback] = useState<string>('جاهز للاتصال بـ Magic A200 Pro');
+  const [lastActionBadge, setLastActionBadge] = useState<string | null>(null);
+
+  const [mouseMode, setMouseMode] = useState<'touchpad' | 'air'>('touchpad');
+  const [pointerSupported, setPointerSupported] = useState(false);
+  const [airSupported, setAirSupported] = useState(false);
+  const [pointerStatus, setPointerStatus] = useState('لوحة اللمس جاهزة');
+  const [airStatus, setAirStatus] = useState('الماوس الهوائي (Gyro) جاهز');
+
+  const [deviceModalVisible, setDeviceModalVisible] = useState(false);
+  const [settingsModalVisible, setSettingsModalVisible] = useState(false);
+  const [textModalVisible, setTextModalVisible] = useState(false);
+  const [addAppModalVisible, setAddAppModalVisible] = useState(false);
+
+  const [manualName, setManualName] = useState('Magic A200 Pro');
+  const [manualIp, setManualIp] = useState('');
+  const [manualPort, setManualPort] = useState('5555');
+  const [manualProtocol, setManualProtocol] = useState<'adb' | 'ws' | 'http'>('adb');
+  const [manualTransport, setManualTransport] = useState<'wifi' | 'bluetooth'>('wifi');
+  const [manualBtMac, setManualBtMac] = useState('');
+
+  const [scanning, setScanning] = useState(false);
+  const [scanProgressText, setScanProgressText] = useState('');
+  const [discoveredDevices, setDiscoveredDevices] = useState<SavedDevice[]>([]);
+  const [btDevices, setBtDevices] = useState<
+    Array<{ name: string; address: string; bondState?: string }>
+  >([]);
+  const [btScanning, setBtScanning] = useState(false);
+
+  const [tvTextInput, setTvTextInput] = useState('');
+  const [sendingText, setSendingText] = useState(false);
+
+  const [newAppName, setNewAppName] = useState('');
+  const [newAppPackage, setNewAppPackage] = useState('');
+
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gyroSubRef = useRef<ReturnType<typeof Gyroscope.addListener> | null>(null);
+  const lastGyroRef = useRef<{ x: number; y: number; z: number } | null>(null);
+  const [feedback, setFeedback] = useState('');
+  const showFeedback = useCallback((msg: string) => {
+    setFeedback(msg);
+    if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => setFeedback(''), 2500);
+  }, []);
+  const activeDevice = useMemo(
+    () => state.devices.find((d) => d.id === state.activeDeviceId) ?? null,
+    [state.devices, state.activeDeviceId],
+  );
+  const connectToDevice = useCallback((dev: SavedDevice) => {
+    setState((prev) => ({ ...prev, activeDeviceId: dev.id }));
+    showFeedback(`متصل بـ ${dev.name}`);
+  }, [setState, showFeedback]);
+  const handleSendKey = useCallback((key: string) => {
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'key', key }, 200).catch(() => {});
+    }
+  }, [activeDevice]);
+  const handleLaunchApp = useCallback((pkg: string) => {
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'launch_app', packageName: pkg }, 300).catch(() => {});
+    }
+  }, [activeDevice]);
+  const handleSendTvText = useCallback(() => {
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'text' }, 300).catch(() => {});
+    }
+  }, [activeDevice]);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      if (activeTab !== 'remote' || mouseMode !== 'air') {
+        if (gyroSubRef.current) {
+          gyroSubRef.current.remove();
+          gyroSubRef.current = null;
+        }
         return;
       }
-      const subnet = myIp.split(".").slice(0, 3).join(".");
-      if (!wifiIp) setWifiIp(subnet + ".");
-      const found: Array<{ name: string; ip: string }> = [];
-      const ports = [8008, 8080, 5555, 80];
-      const probe = async (ip: string) => {
-        if (ip === myIp) return;
-        for (const port of ports) {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 350);
-          try {
-            await fetch("http://" + ip + ":" + port, { signal: ctrl.signal });
-            found.push({ name: ssid + " • Device (" + ip + ")", ip });
-            setWifiDevices([...found]);
-            clearTimeout(t);
-            return;
-          } catch (e: any) {
-            clearTimeout(t);
-            if (e?.name !== "AbortError" && String(e?.message || "").includes("Failed to connect")) {
-              found.push({ name: ssid + " • Device (" + ip + ")", ip });
-              setWifiDevices([...found]);
-              return;
-            }
+
+      const available = await Gyroscope.isAvailableAsync().catch(() => false);
+      if (!available || !mounted) {
+        setAirStatus('حساس الجيروسكوب غير متوفر على هذا الهاتف');
+        return;
+      }
+
+      Gyroscope.setUpdateInterval(60);
+      setAirStatus('الماوس الهوائي نشط — حرّك الهاتف بلطف');
+
+      gyroSubRef.current = Gyroscope.addListener((data: { x: number; y: number; z: number }) => {
+        if (!mounted) return;
+        const prev = lastGyroRef.current;
+        lastGyroRef.current = data;
+        if (!prev) return;
+
+        const dx = Math.round(-data.y * 14 * state.mouseSensitivity);
+        const dy = Math.round(-data.x * 14 * state.mouseSensitivity);
+
+        if (Math.abs(dx) >= 2 || Math.abs(dy) >= 2) {
+          setAirStatus(`Gyro (${dx}, ${dy})`);
+          if (MagicHardware?.sendMouseMove) {
+            MagicHardware.sendMouseMove(dx, dy).catch(() => {});
+          }
+          if (activeDevice) {
+            sendCommandToTv(
+              activeDevice,
+              { type: 'mouse_move', dx, dy, source: 'gyro' },
+              350,
+            ).catch(() => {});
           }
         }
-      };
-      const allIps = Array.from({ length: 254 }, (_, i) => subnet + "." + (i + 1));
-      for (let i = 0; i < allIps.length; i += 32) {
-        await Promise.all(allIps.slice(i, i + 32).map(probe));
+      });
+    })();
+
+    return () => {
+      mounted = false;
+      if (gyroSubRef.current) {
+        gyroSubRef.current.remove();
+        gyroSubRef.current = null;
+      }
+    };
+  }, [activeTab, mouseMode, state.mouseSensitivity, activeDevice]);
+
+  const handleTouchpadDelta = useCallback(
+    (dx: number, dy: number) => {
+      const scaledX = Math.round(dx * state.mouseSensitivity);
+      const scaledY = Math.round(dy * state.mouseSensitivity);
+      setPointerStatus(`Pointer (${scaledX}, ${scaledY})`);
+      if (MagicHardware?.sendMouseMove) {
+        MagicHardware.sendMouseMove(scaledX, scaledY).catch(() => {});
+      }
+      if (activeDevice) {
+        sendCommandToTv(activeDevice, { type: 'mouse_move', dx: scaledX, dy: scaledY }, 250).catch(() => {});
+      }
+    },
+    [state.mouseSensitivity, activeDevice],
+  );
+
+  const handleTouchpadPress = useCallback(() => {
+    setPointerStatus('Click');
+    if (MagicHardware?.sendMouseClick) {
+      MagicHardware.sendMouseClick('left').catch(() => {});
+    }
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'mouse_click', button: 'left' }, 250).catch(() => {});
+    }
+  }, [activeDevice]);
+
+  const handleRightClick = useCallback(() => {
+    setPointerStatus('Right Click');
+    if (MagicHardware?.sendMouseClick) {
+      MagicHardware.sendMouseClick('right').catch(() => {});
+    }
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'mouse_click', button: 'right' }, 250).catch(() => {});
+    }
+  }, [activeDevice]);
+
+  const handleRecenter = useCallback(() => {
+    lastGyroRef.current = null;
+    setAirStatus('تمت إعادة توسيط المؤشر');
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'mouse_recenter' }, 250).catch(() => {});
+    }
+  }, [activeDevice]);
+
+  const handleScroll = useCallback(
+    (deltaY: number) => {
+      if (activeDevice) {
+        sendCommandToTv(activeDevice, { type: 'scroll', dx: 0, dy: deltaY }, 250).catch(() => {});
+      }
+    },
+    [activeDevice],
+  );
+
+  const mouseController: RemoteMouseController = useMemo(
+    () => ({
+      mode: mouseMode,
+      setMode: (mode) => {
+        setMouseMode(mode);
+        lastGyroRef.current = null;
+      },
+      pointerSupported,
+      airSupported,
+      pointerStatus,
+      airStatus,
+      sensitivity: state.mouseSensitivity,
+      setSensitivity: (val) =>
+        setState((prev) => ({ ...prev, mouseSensitivity: val })),
+      onTouchpadDelta: handleTouchpadDelta,
+      onTouchpadPress: handleTouchpadPress,
+      onRightClick: handleRightClick,
+      onRecenter: handleRecenter,
+      onScroll: handleScroll,
+    }),
+    [
+      mouseMode,
+      pointerSupported,
+      airSupported,
+      pointerStatus,
+      airStatus,
+      state.mouseSensitivity,
+      handleTouchpadDelta,
+      handleTouchpadPress,
+      handleRightClick,
+      handleRecenter,
+      handleScroll,
+    ],
+  );
+  const handleScanNetwork = useCallback(async () => {
+    setScanning(true);
+    setDiscoveredDevices([]);
+    setScanProgressText('جاري فحص الشبكة المحلية...');
+
+    try {
+      const ipAddress = await Network.getIpAddressAsync().catch(() => null);
+      const prefix = getSubnetPrefix(ipAddress) ?? '192.168.1';
+      const candidates: string[] = [];
+
+      const seedHosts = [1, 2, 10, 20, 50, 100, 101, 102, 110, 150, 200, 254];
+      for (const h of seedHosts) {
+        candidates.push(`${prefix}.${h}`);
+      }
+      for (let i = 1; i <= 254; i++) {
+        const ip = `${prefix}.${i}`;
+        if (!candidates.includes(ip)) {
+          candidates.push(ip);
+        }
+      }
+
+      const found: SavedDevice[] = [];
+      const batchSize = 18;
+
+      for (let i = 0; i < candidates.length; i += batchSize) {
+        const batch = candidates.slice(i, i + batchSize);
+        setScanProgressText(
+          `فحص الشبكة ${prefix}.x (${Math.min(i + batchSize, candidates.length)}/${candidates.length})...`,
+        );
+
+        const results = await Promise.all(
+          batch.map(async (ip) => {
+            const res = await probeTvHost(ip, 5555, 'adb', 500);
+            return { ip, res };
+          }),
+        );
+
+        for (const item of results) {
+          if (item.res.reachable) {
+            found.push({
+              id: `scan-${item.ip}-${Date.now()}-${found.length}`,
+              name: item.res.name ?? `Magic TV (${item.ip})`,
+              ip: item.ip,
+              port: 5555,
+              protocol: 'adb',
+              transport: 'wifi',
+              model: item.res.model,
+              lastSeen: 'تم العثور عليه',
+            });
+          }
+        }
+      }
+
+      setDiscoveredDevices(found);
+      setScanProgressText(
+        found.length > 0
+          ? `تم العثور على ${found.length} جهاز في الشبكة`
+          : `لم يتم العثور على أجهزة تلقائياً في ${prefix}.x — يمكنك إضافته يدوياً بالـ IP`,
+      );
+    } catch {
+      setScanProgressText('تعذر فحص الشبكة — تحقق من اتصال Wi-Fi');
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  const handleScanBluetooth = useCallback(async () => {
+    setBtScanning(true);
+    try {
+      if (MagicHardware?.scanBluetoothDevices) {
+        const list = await MagicHardware.scanBluetoothDevices();
+        setBtDevices(
+          (list ?? []).map((item, idx) => ({
+            name: item.name?.trim() || `BT Device ${idx + 1}`,
+            address: item.address?.trim() || `00:11:22:33:44:${(idx + 10).toString(16)}`,
+            bondState: item.bondState,
+          })),
+        );
+      } else {
+        setBtDevices([]);
+        Alert.alert(
+          'Bluetooth HID',
+          'ماسح البلوتوث الأصلي متوفر داخل بناء Native APK المفعّل بـ withMagicHardware.',
+        );
       }
     } finally {
-      setWifiScanning(false);
+      setBtScanning(false);
     }
-  };
+  }, []);
 
-  const handleConnectIp = (targetIp = wifiIp) => {
-    if (!targetIp.trim()) return;
-    MagicControl?.resolveHostName?.(targetIp.trim()).catch(() => {});
-    setConnectedName(`TV Box (${targetIp.trim()})`);
-    setConnectedType('Wi-Fi');
-  };
+  const handleSaveManualDevice = useCallback(() => {
+    const cleanIp = manualIp.trim();
+    const parsedPort = Number(manualPort.trim()) || 5555;
 
-  const handleScanBt = async () => {
-    setBtScanning(true);
-    setBtDevices([]);
-    try {
-      const { PermissionsAndroid, Platform } = require("react-native");
-      if (Platform.OS === "android") {
-        await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
-      }
-      await MagicControl?.startBluetoothScan?.();
-    } catch (_) {}
-    setTimeout(() => setBtScanning(false), 6000);
-  };
+    if (manualTransport === 'wifi' && !isValidIpv4(cleanIp)) {
+      Alert.alert('عنوان IP غير صحيح', 'يرجى إدخال عنوان IP صحيح مثل 192.168.1.120');
+      return;
+    }
 
-  const handlePairBt = (dev: { name: string; address: string }) => {
-    setConnectedName(dev.name);
-    setConnectedType('Bluetooth');
-    MagicControl?.pairBluetoothDevice?.(dev.address).catch(() => {});
-  };
+    const newDevice: SavedDevice = {
+      id: `dev-${Date.now()}`,
+      name: manualName.trim() || 'Magic A200 Pro',
+      ip: manualTransport === 'wifi' ? cleanIp : '0.0.0.0',
+      port: parsedPort,
+      protocol: manualProtocol,
+      transport: manualTransport,
+      bluetoothMac: manualTransport === 'bluetooth' ? manualBtMac.trim() : undefined,
+      lastSeen: 'مضاف حديثاً',
+    };
 
-  const handleSendAcIr = (newTemp = acTemp, newPower = acPower) => {
-    setAcTemp(newTemp);
-    setAcPower(newPower);
-    const brandKey = String(acBrand || "").toLowerCase();
-    const modeKey = String(acMode || "").toLowerCase();
-    const brandHeader = brandKey.includes("tosot") || brandKey.includes("yac")
-      ? [9000, 4500]
-      : brandKey.includes("hafez") || brandKey.includes("حافظ")
-      ? [8800, 4400]
-      : brandKey.includes("midea")
-      ? [4400, 4400]
-      : brandKey.includes("lg")
-      ? [8500, 4200]
-      : brandKey.includes("samsung")
-      ? [8900, 4500]
-      : brandKey.includes("toshiba")
-      ? [8600, 4300]
-      : [9000, 4500];
-    const modeCode = modeKey.includes("cool") ? 1 : modeKey.includes("heat") ? 2 : modeKey.includes("dry") ? 3 : modeKey.includes("fan") ? 4 : 0;
-    const fanCode = String(acFan || "").toLowerCase().includes("high") ? 3 : String(acFan || "").toLowerCase().includes("med") ? 2 : String(acFan || "").toLowerCase().includes("low") ? 1 : 0;
-    const tempCode = Math.max(0, Math.min(15, Number(newTemp) - 16));
-    const bits = [
-      newPower ? 1 : 0,
-      ...tempCode.toString(2).padStart(4, "0").split("").map(Number),
-      ...modeCode.toString(2).padStart(3, "0").split("").map(Number),
-      ...fanCode.toString(2).padStart(2, "0").split("").map(Number),
-    ];
-    const pattern = [...brandHeader];
-    bits.forEach((b) => pattern.push(580, b === 1 ? 1660 : 560));
-    pattern.push(580);
-    MagicControl?.transmitIr?.(38000, pattern).catch(() => {});
-    MagicControl?.sendIrCode?.(38000, pattern.join(",")).catch(() => {});
-  };
+    setState((prev) => ({
+      ...prev,
+      devices: [newDevice, ...prev.devices],
+      activeDeviceId: newDevice.id,
+    }));
+
+    setDeviceModalVisible(false);
+    connectToDevice(newDevice);
+  }, [
+    manualName,
+    manualIp,
+    manualPort,
+    manualProtocol,
+    manualTransport,
+    manualBtMac,
+    connectToDevice,
+  ]);
+
+  const handleAddDiscoveredDevice = useCallback(
+    (dev: SavedDevice) => {
+      setState((prev) => {
+        const exists = prev.devices.some(
+          (d) => d.ip === dev.ip && d.port === dev.port,
+        );
+        const updated = exists
+          ? prev.devices.map((d) =>
+              d.ip === dev.ip && d.port === dev.port ? { ...d, ...dev } : d,
+            )
+          : [dev, ...prev.devices];
+        return {
+          ...prev,
+          devices: updated,
+          activeDeviceId: dev.id,
+        };
+      });
+      setDeviceModalVisible(false);
+      connectToDevice(dev);
+    },
+    [connectToDevice],
+  );
+
+  const handleRemoveDevice = useCallback((deviceId: string) => {
+    setState((prev) => {
+      const remaining = prev.devices.filter((d) => d.id !== deviceId);
+      const nextActive =
+        prev.activeDeviceId === deviceId
+          ? remaining[0]?.id ?? null
+          : prev.activeDeviceId;
+      return {
+        ...prev,
+        devices: remaining,
+        activeDeviceId: nextActive,
+      };
+    });
+  }, []);
+
+  const handleAddCustomApp = useCallback(() => {
+    const title = newAppName.trim();
+    const pkg = newAppPackage.trim();
+    if (!title || !pkg) {
+      Alert.alert('نقص في البيانات', 'أدخل اسم التطبيق واسم الحزمة (Package Name)');
+      return;
+    }
+
+    const shortcut: RemoteAppShortcut = {
+      id: `app-${Date.now()}`,
+      name: title,
+      packageName: pkg,
+      icon: 'apps-outline',
+    };
+
+    setState((prev) => ({
+      ...prev,
+      customApps: [...prev.customApps, shortcut],
+    }));
+    setNewAppName('');
+    setNewAppPackage('');
+    setAddAppModalVisible(false);
+  }, [newAppName, newAppPackage]);
+  const statusColor =
+    connectionStatus === 'connected'
+      ? '#34D399'
+      : connectionStatus === 'connecting'
+        ? '#FBBF24'
+        : '#F87171';
+
+  const statusLabel =
+    connectionStatus === 'connected'
+      ? 'متصل'
+      : connectionStatus === 'connecting'
+        ? 'جاري الاتصال'
+        : 'غير متصل';
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: ui.bg }]}>
-      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} backgroundColor={ui.bg} />
-      <View style={styles.header}>
-        <View style={styles.brandRow}>
-          <View style={styles.logoBadge}><Ionicons name="tv-outline" size={18} color={accentColor} /></View>
-          <Text style={[styles.appTitle, { color: ui.text }]}>{isAr ? 'ريموت ماجيك الذكي' : 'Magic Remote TV'}</Text>
+    <SafeAreaView
+      edges={['top', 'bottom']}
+      style={[styles.safeArea, { backgroundColor: colors.background }]}
+    >
+      <StatusBar style={isDark ? 'light' : 'dark'} hidden />
+
+      <View
+        style={[
+          styles.header,
+          {
+            backgroundColor: colors.card,
+            borderBottomColor: colors.border,
+            paddingTop: Math.max(insets.top * 0.15, 6),
+          },
+        ]}
+      >
+        <View style={styles.headerLeft}>
+          <Animated.View
+            style={[
+              styles.statusDot,
+              { backgroundColor: statusColor, opacity: pulseAnim },
+            ]}
+          />
+          <View style={styles.headerTitles}>
+            <Text style={[styles.brandTitle, { color: colors.text }]} numberOfLines={1}>
+              ريموت العقابي
+            </Text>
+            <Text
+              style={[styles.deviceSubtitle, { color: colors.secondary }]}
+              numberOfLines={1}
+            >
+              {activeDevice
+                ? `${activeDevice.name} · ${statusLabel}`
+                : `Magic A200 Pro · ${statusLabel}`}
+            </Text>
+          </View>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+
+        <View style={styles.headerActions}>
           <Pressable
-            onPress={() => setSettingsOpen(true)}
-            style={[styles.plusBtn, { backgroundColor: ui.card, borderWidth: 1, borderColor: ui.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="إرسال نص"
+            onPress={() => setTextModalVisible(true)}
+            style={[
+              styles.iconButton,
+              { backgroundColor: colors.cardAlt, borderColor: colors.border },
+            ]}
           >
-            <Ionicons name="settings-outline" size={20} color={accentColor} />
+            <Ionicons name="keypad-outline" size={18} color={colors.text} />
           </Pressable>
-          <Pressable onPress={() => openConnectedTvApps()} style={[styles.plusBtn, { backgroundColor: accentColor }]}>
-            <Ionicons name="add" size={24} color="#0A1012" />
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="الأجهزة والاتصال"
+            onPress={() => setDeviceModalVisible(true)}
+            style={[
+              styles.iconButton,
+              { backgroundColor: colors.cardAlt, borderColor: colors.border },
+            ]}
+          >
+            <Ionicons name="tv-outline" size={18} color="#7CE3C3" />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="الإعدادات"
+            onPress={() => setSettingsModalVisible(true)}
+            style={[
+              styles.iconButton,
+              { backgroundColor: colors.cardAlt, borderColor: colors.border },
+            ]}
+          >
+            <Ionicons name="settings-outline" size={18} color={colors.text} />
           </Pressable>
         </View>
       </View>
 
-      <Pressable onPress={() => setBottomTab('connections')} style={[styles.statusBanner, { backgroundColor: ui.card, borderColor: ui.border }]}>
-        <View style={[styles.statusDot, connectedName ? styles.dotGreen : styles.dotAmber]} />
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.statusTitle, { color: ui.text }]}>
-            {connectedName ? `${connectedType} device` : `IR Ready · ${activeTvBrand.name}`}
-          </Text>
-          <Text style={[styles.statusSub, { color: ui.sub }]}>
-            {connectedName
-              ? `${connectedType} · Connected to ${connectedName}`
-              : `${activeTvBrand.protocol} (${activeTvBrand.address}) · Tap to pair BT/Wi-Fi`}
-          </Text>
-        </View>
-        <View style={[styles.statusCheck, connectedName && styles.statusCheckActive]}>
-          {connectedName && <Ionicons name="checkmark" size={14} color="#0A1012" />}
-        </View>
-      </Pressable>
-
-      <View style={{ flex: 1 }}>
-        {bottomTab === 'remote' && (
-          <View style={{ flex: 1 }}>
-            <View style={{ paddingHorizontal: 16, paddingBottom: 4 }}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.brandPillsScroll}>
-                {TV_BRANDS.map((b) => {
-                  const active = selectedTvBrandId === b.id;
-                  return (
-                    <Pressable
-                      key={b.id}
-                      onPress={() => { setSelectedTvBrandId(b.id); setCustomKeyMap({}); }}
-                      style={[styles.tvBrandPill, active && styles.tvBrandPillActive]}
-                    >
-                      <Text style={[styles.tvBrandPillText, active && styles.tvBrandPillTextActive]}>{b.name}</Text>
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-            </View>
-            <RemoteExperience
-              activeTab={remotePage}
-              onTabChange={setRemotePage}
-              onSendKey={handleSendKey}
-              colors={{}}
-              mouse={{
-                mode: mouseMode, setMode: setMouseMode, pointerSupported: true, airSupported: true,
-                sensitivity, setSensitivity,
-                onTouchpadDelta: (dx, dy) => MagicControl?.sendBluetoothMouseMove?.(dx * sensitivity, dy * sensitivity).catch(() => {}),
-                onTouchpadPress: () => MagicControl?.sendBluetoothMouseClick?.().catch(() => {}),
-                onRightClick: () => MagicControl?.sendBluetoothKey?.('back').catch(() => {}),
-                onRecenter: () => { MagicControl?.stopGyroscope?.(); setTimeout(() => MagicControl?.startGyroscope?.().catch(() => {}), 80); },
-              }}
-            />
+      <View
+        style={[
+          styles.feedbackBar,
+          { backgroundColor: colors.cardAlt, borderBottomColor: colors.border },
+        ]}
+      >
+        <Text
+          style={[styles.feedbackText, { color: colors.secondary }]}
+          numberOfLines={1}
+        >
+          {lastFeedback}
+        </Text>
+        {lastActionBadge ? (
+          <View style={styles.badgePill}>
+            <Text style={styles.badgeText}>{lastActionBadge}</Text>
           </View>
-        )}
-
-        {bottomTab === 'connections' && (
-          <ScrollView contentContainerStyle={styles.connScrollBody} showsVerticalScrollIndicator={false}>
-            <Text style={styles.sectionKicker}>DEVICE SETUP</Text>
-            <Text style={styles.sectionHeading}>Connections</Text>
-            <View style={styles.connCard}>
-              <View style={styles.connCardHeader}>
-                <View style={styles.connIconCircle}><Ionicons name="wifi" size={19} color={accentColor} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.connCardTitle}>Wi-Fi</Text>
-                  <Text style={styles.connCardSub}>Discover local TV and media services</Text>
-                </View>
-              </View>
-              <Pressable onPress={handleDiscoverWifi} style={styles.mintPillBtn}>
-                <Ionicons name="search" size={16} color="#0A1012" />
-                <Text style={styles.mintPillBtnText}>{wifiScanning ? 'Discovering...' : 'Discover devices'}</Text>
-              </Pressable>
-              <Text style={styles.scanStateLabel}>{wifiScanning ? 'Scanning local subnet...' : wifiDevices.length > 0 ? `${wifiDevices.length} device(s) found` : 'Not scanned'}</Text>
-              {wifiDevices.length === 0 ? (
-                <View style={styles.emptyDiscoveryBox}><Ionicons name="search-outline" size={16} color="#94A3B8" /><Text style={styles.emptyDiscoveryText}>No devices discovered yet.</Text></View>
-              ) : (
-                wifiDevices.map((d) => (
-                  <Pressable key={d.ip} onPress={() => handleConnectIp(d.ip)} style={styles.foundDeviceRow}>
-                    <Ionicons name="tv-outline" size={18} color={accentColor} />
-                    <View style={{ flex: 1 }}><Text style={styles.foundDeviceName}>{d.name}</Text><Text style={styles.foundDeviceSub}>{d.ip}</Text></View>
-                    <Text style={styles.connectActionText}>Connect</Text>
-                  </Pressable>
-                ))
-              )}
-              <View style={styles.dividerLine} />
-              <Text style={styles.subFieldLabel}>Manual IP connection</Text>
-              <TextInput value={wifiIp} onChangeText={setWifiIp} placeholder="192.168.1.20" placeholderTextColor="#64748B" keyboardType="numeric" style={styles.manualIpField} />
-              <Pressable onPress={() => handleConnectIp(wifiIp)} style={[styles.connectIpBtn, wifiIp.trim().length > 6 && styles.connectIpBtnActive]}>
-                <Ionicons name="link-outline" size={16} color={wifiIp.trim().length > 6 ? '#0A1012' : '#4E7A6E'} />
-                <Text style={[styles.connectIpBtnText, wifiIp.trim().length > 6 && { color: '#0A1012' }]}>Connect by IP</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.connCard}>
-              <View style={styles.connCardHeader}>
-                <View style={styles.connIconCircle}><Ionicons name="bluetooth" size={19} color={accentColor} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.connCardTitle}>Bluetooth</Text>
-                  <Text style={styles.connCardSub}>Pair as a real remote-control device</Text>
-                </View>
-              </View>
-              <Pressable onPress={handleScanBt} style={styles.mintWideBtn}>
-                <Ionicons name="search" size={16} color="#0A1012" />
-                <Text style={styles.mintPillBtnText}>{btScanning ? 'Scanning nearby...' : 'Scan nearby devices'}</Text>
-              </Pressable>
-              
-              {btDevices.map((d) => (
-                <Pressable key={d.address} onPress={() => handlePairBt(d)} style={styles.foundDeviceRow}>
-                  <Ionicons name="bluetooth-outline" size={18} color={accentColor} />
-                  <View style={{ flex: 1 }}><Text style={styles.foundDeviceName}>{d.name}</Text><Text style={styles.foundDeviceSub}>{d.address}</Text></View>
-                  <Text style={styles.connectActionText}>Pair</Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={styles.connCard}>
-              <View style={styles.connCardHeader}>
-                <View style={styles.connIconCircle}><Ionicons name="radio-outline" size={19} color={accentColor} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.connCardTitle}>Infrared</Text>
-                  <Text style={styles.connCardSub}>Universal TV, Box & Satellite IR</Text>
-                </View>
-              </View>
-              <View style={styles.irNoticeBox}>
-                <View style={styles.dotGreen} />
-                <Text style={styles.irNoticeText}>Active Brand: {activeTvBrand.name} · {activeTvBrand.protocol} ({activeTvBrand.address})</Text>
-              </View>
-              <View style={styles.necProfileRow}>
-                {TV_BRANDS.map((b) => {
-                  const active = selectedTvBrandId === b.id;
-                  return (
-                    <Pressable key={b.id} onPress={() => { setSelectedTvBrandId(b.id); setCustomKeyMap({}); }} style={[styles.necChip, active && styles.necChipActive]}>
-                      <Text style={[styles.necChipText, active && { color: '#7CE3C3' }]}>{b.name} · {b.address}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              <Pressable onPress={() => setNecModalOpen(true)} style={styles.mintWideBtn}>
-                <Ionicons name="options-outline" size={17} color="#0A1012" />
-                <Text style={styles.mintPillBtnText}>Customize per-button codes</Text>
-              </Pressable>
-              <View style={styles.irUseRow}>
-                <Pressable onPress={() => { setIrTarget('satellite'); setConnectedName(`${activeTvBrand.name} IR`); setConnectedType('Infrared'); setBottomTab('remote'); }} style={[styles.irUseBtn, irTarget === 'satellite' && styles.irUseBtnActive]}>
-                  <Text style={[styles.irUseBtnText, irTarget === 'satellite' && { color: '#7CE3C3' }]}>Use TV / Box IR</Text>
-                </Pressable>
-                <Pressable onPress={() => { setIrTarget('ac'); setBottomTab('ac'); }} style={[styles.irUseBtn, irTarget === 'ac' && styles.irUseBtnActive]}>
-                  <Text style={[styles.irUseBtnText, irTarget === 'ac' && { color: '#7CE3C3' }]}>Use Tosot AC IR</Text>
-                </Pressable>
-              </View>
-            </View>
-          </ScrollView>
-        )}
-
-        {bottomTab === 'ac' && (
-          <ScrollView contentContainerStyle={styles.acScrollBody} showsVerticalScrollIndicator={false}>
-            <Text style={styles.sectionKicker}>SPLIT AIR CONDITIONER</Text>
-            <Text style={styles.sectionHeading}>Tosot AC</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.brandPillsScroll}>
-              {['Tosot', 'Gree', 'LG', 'Samsung', 'Midea', 'Daikin', 'Carrier', 'TCL', 'Hisense'].map((b) => {
-                const active = acBrand === b;
-                return (
-                  <Pressable key={b} onPress={() => { setAcBrand(b); handleSendAcIr(acTemp, acPower); }} style={[styles.acBrandPill, active && styles.acBrandPillActive]}>
-                    <Text style={[styles.acBrandPillText, active && styles.acBrandPillTextActive]}>{b}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <View style={styles.irStateCard}>
-              <View style={styles.irStateTopRow}>
-                <Text style={styles.irStateHeader}>{acBrand.toUpperCase()} · IR COMMAND STATE</Text>
-                <View style={[styles.irPowerBadge, acPower && styles.irPowerBadgeOn]}>
-                  <Text style={[styles.irPowerBadgeText, acPower && { color: '#7CE3C3' }]}>{acPower ? 'ON' : 'OFF'}</Text>
-                </View>
-              </View>
-              <View style={styles.irStateMidRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}><Text style={styles.irTempValue}>{acTemp}</Text><Text style={styles.irTempUnit}>°C</Text></View>
-                <View style={{ alignItems: 'flex-end' }}><Text style={styles.irModeLabel}>{acMode}</Text><Text style={styles.irFanLabel}>FAN {acFan.toUpperCase()}</Text></View>
-              </View>
-              <Text style={styles.irDisclaimer}>Remote command values only; the air conditioner does not report back over IR.</Text>
-            </View>
-            <View style={styles.acPowerTempRow}>
-              <Pressable onPress={() => handleSendAcIr(acTemp, !acPower)} style={styles.acMintPowerBtn}><Ionicons name="power" size={24} color="#0A1012" /></Pressable>
-              <View style={styles.acTempCapsule}>
-                <Pressable onPress={() => handleSendAcIr(Math.max(16, acTemp - 1), true)} style={styles.acStepCircle}><Ionicons name="remove" size={18} color="#CBD5E1" /></Pressable>
-                <Text style={styles.acCapsuleTempText}>{acTemp}°C</Text>
-                <Pressable onPress={() => handleSendAcIr(Math.min(30, acTemp + 1), true)} style={styles.acStepCircle}><Ionicons name="add" size={18} color="#CBD5E1" /></Pressable>
-              </View>
-            </View>
-            <Text style={styles.acGroupLabel}>Mode</Text>
-            <View style={styles.acGridRow}>
-              {[{ label: 'Auto', icon: 'sync-outline' }, { label: 'Cool', icon: 'snow-outline' }, { label: 'Heat', icon: 'sunny-outline' }].map((m) => {
-                const active = acMode === m.label;
-                return (
-                  <Pressable key={m.label} onPress={() => { setAcMode(m.label as any); handleSendAcIr(acTemp, true); }} style={[styles.acOptionTile, active && styles.acOptionTileActive]}>
-                    <Ionicons name={m.icon as any} size={17} color={active ? accentColor : '#94A3B8'} />
-                    <Text style={[styles.acOptionText, active && { color: '#E2E8F0' }]}>{m.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <View style={styles.acGridRow}>
-              {[{ label: 'Dry', icon: 'water-outline' }, { label: 'Fan', icon: 'leaf-outline' }].map((m) => {
-                const active = acMode === m.label;
-                return (
-                  <Pressable key={m.label} onPress={() => { setAcMode(m.label as any); handleSendAcIr(acTemp, true); }} style={[styles.acOptionTile, active && styles.acOptionTileActive]}>
-                    <Ionicons name={m.icon as any} size={17} color={active ? accentColor : '#94A3B8'} />
-                    <Text style={[styles.acOptionText, active && { color: '#E2E8F0' }]}>{m.label}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <Text style={styles.acGroupLabel}>Fan speed</Text>
-            <View style={styles.acFanRow}>
-              {(['Auto', 'Low', 'Medium', 'High'] as const).map((f) => {
-                const active = acFan === f;
-                return (
-                  <Pressable key={f} onPress={() => { setAcFan(f); handleSendAcIr(acTemp, true); }} style={[styles.acFanPill, active && styles.acFanPillActive]}>
-                    <Text style={[styles.acFanPillText, active && { color: '#7CE3C3' }]}>{f}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <View style={styles.acExtrasRow}>
-              <Pressable onPress={() => { setAcSwing(!acSwing); handleSendAcIr(acTemp, true); }} style={[styles.acExtraCard, acSwing && styles.acOptionTileActive]}><Ionicons name="swap-vertical-outline" size={20} color={acSwing ? accentColor : '#94A3B8'} /><Text style={styles.acExtraText}>Vertical swing</Text></Pressable>
-              <Pressable onPress={() => { setAcTurbo(!acTurbo); handleSendAcIr(acTemp, true); }} style={[styles.acExtraCard, acTurbo && styles.acOptionTileActive]}><Ionicons name="flash-outline" size={20} color={acTurbo ? accentColor : '#94A3B8'} /><Text style={styles.acExtraText}>Turbo</Text></Pressable>
-              <Pressable onPress={() => { setAcSleep(!acSleep); handleSendAcIr(acTemp, true); }} style={[styles.acExtraCard, acSleep && styles.acOptionTileActive]}><Ionicons name="moon-outline" size={20} color={acSleep ? accentColor : '#94A3B8'} /><Text style={styles.acExtraText}>Sleep</Text></Pressable>
-            </View>
-          </ScrollView>
-        )}
+        ) : null}
       </View>
 
-      <View style={[styles.bottomNav, { backgroundColor: ui.card, borderColor: ui.border }]}>
-        <Pressable onPress={() => setBottomTab('remote')} style={[styles.navItem, bottomTab === 'remote' && { backgroundColor: ui.cardAlt, borderWidth: 1, borderColor: accentColor }]}>
-          <Ionicons name="game-controller-outline" size={18} color={bottomTab === 'remote' ? accentColor : ui.sub} />
-          <Text style={[styles.navText, { color: bottomTab === 'remote' ? accentColor : ui.sub }]}>{isAr ? 'الريموت' : 'Remote'}</Text>
-        </Pressable>
-        <Pressable onPress={() => setBottomTab('connections')} style={[styles.navItem, bottomTab === 'connections' && { backgroundColor: ui.cardAlt, borderWidth: 1, borderColor: accentColor }]}>
-          <Ionicons name="git-network-outline" size={18} color={bottomTab === 'connections' ? accentColor : ui.sub} />
-          <Text style={[styles.navText, { color: bottomTab === 'connections' ? accentColor : ui.sub }]}>{isAr ? 'الاتصال' : 'Connections'}</Text>
-        </Pressable>
-        <Pressable onPress={() => setBottomTab('ac')} style={[styles.navItem, bottomTab === 'ac' && { backgroundColor: ui.cardAlt, borderWidth: 1, borderColor: accentColor }]}>
-          <Ionicons name="snow-outline" size={18} color={bottomTab === 'ac' ? accentColor : ui.sub} />
-          <Text style={[styles.navText, { color: bottomTab === 'ac' ? accentColor : ui.sub }]}>{isAr ? 'السبلت' : 'Tosot AC'}</Text>
-        </Pressable>
-      </View>
-
-      {/* Separate Settings Interface Modal */}
-      <Modal visible={settingsOpen} animationType="slide" onRequestClose={() => setSettingsOpen(false)}>
-        <SafeAreaView style={[styles.safe, { backgroundColor: ui.bg }]}>
-          <View style={[styles.header, { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: ui.border }]}>
-            <View style={styles.brandRow}>
-              <View style={[styles.logoBadge, { backgroundColor: ui.card, borderColor: ui.border }]}>
-                <Ionicons name="settings" size={18} color={accentColor} />
-              </View>
-              <Text style={[styles.appTitle, { color: ui.text }]}>{isAr ? 'الإعدادات والمظهر' : 'Settings & Theme'}</Text>
-            </View>
-            <Pressable
-              onPress={() => setSettingsOpen(false)}
-              style={[styles.plusBtn, { backgroundColor: ui.card, borderWidth: 1, borderColor: ui.border }]}
-            >
-              <Ionicons name="close" size={22} color={ui.text} />
-            </Pressable>
-          </View>
-
-          <ScrollView contentContainerStyle={{ padding: 16, gap: 14, paddingBottom: 30 }}>
-            {/* 1. Language Card */}
-            <View style={[styles.connCard, { backgroundColor: ui.card, borderColor: ui.border }]}>
-              <View style={styles.connCardHeader}>
-                <View style={[styles.connIconCircle, { backgroundColor: ui.cardAlt, borderColor: ui.border }]}>
-                  <Ionicons name="language-outline" size={20} color={accentColor} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.connCardTitle, { color: ui.text }]}>{isAr ? 'اللغة' : 'Language'}</Text>
-                  <Text style={[styles.connCardSub, { color: ui.sub }]}>{isAr ? 'اختر لغة واجهة التطبيق' : 'Choose application language'}</Text>
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
-                <Pressable
-                  onPress={() => setLang('ar')}
-                  style={{
-                    flex: 1, paddingVertical: 13, borderRadius: 14, alignItems: 'center',
-                    backgroundColor: isAr ? accentColor : ui.cardAlt,
-                    borderWidth: 1, borderColor: isAr ? accentColor : ui.border,
-                  }}
-                >
-                  <Text style={{ fontWeight: '800', fontSize: 15, color: isAr ? '#0A1012' : ui.text }}>العربية</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setLang('en')}
-                  style={{
-                    flex: 1, paddingVertical: 13, borderRadius: 14, alignItems: 'center',
-                    backgroundColor: !isAr ? accentColor : ui.cardAlt,
-                    borderWidth: 1, borderColor: !isAr ? accentColor : ui.border,
-                  }}
-                >
-                  <Text style={{ fontWeight: '800', fontSize: 15, color: !isAr ? '#0A1012' : ui.text }}>English</Text>
-                </Pressable>
-              </View>
-            </View>
-
-            {/* 2. Dark / Light Mode Card */}
-            <View style={[styles.connCard, { backgroundColor: ui.card, borderColor: ui.border }]}>
-              <View style={styles.connCardHeader}>
-                <View style={[styles.connIconCircle, { backgroundColor: ui.cardAlt, borderColor: ui.border }]}>
-                  <Ionicons name={isDark ? 'moon-outline' : 'sunny-outline'} size={20} color={accentColor} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.connCardTitle, { color: ui.text }]}>{isAr ? 'وضع الإضاءة (المود)' : 'Display Mode'}</Text>
-                  <Text style={[styles.connCardSub, { color: ui.sub }]}>{isAr ? 'التبديل بين الوضع الليلي والنهاري' : 'Switch between Dark and Light modes'}</Text>
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
-                <Pressable
-                  onPress={() => setThemeMode('dark')}
-                  style={{
-                    flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7,
-                    paddingVertical: 13, borderRadius: 14,
-                    backgroundColor: isDark ? accentColor : ui.cardAlt,
-                    borderWidth: 1, borderColor: isDark ? accentColor : ui.border,
-                  }}
-                >
-                  <Ionicons name="moon" size={17} color={isDark ? '#0A1012' : ui.text} />
-                  <Text style={{ fontWeight: '800', fontSize: 14, color: isDark ? '#0A1012' : ui.text }}>
-                    {isAr ? 'الوضع الليلي' : 'Dark Mode'}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => setThemeMode('light')}
-                  style={{
-                    flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7,
-                    paddingVertical: 13, borderRadius: 14,
-                    backgroundColor: !isDark ? accentColor : ui.cardAlt,
-                    borderWidth: 1, borderColor: !isDark ? accentColor : ui.border,
-                  }}
-                >
-                  <Ionicons name="sunny" size={17} color={!isDark ? '#0A1012' : ui.text} />
-                  <Text style={{ fontWeight: '800', fontSize: 14, color: !isDark ? '#0A1012' : ui.text }}>
-                    {isAr ? 'الوضع النهاري' : 'Light Mode'}
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-
-            {/* 3. Beautiful Colors Card */}
-            <View style={[styles.connCard, { backgroundColor: ui.card, borderColor: ui.border }]}>
-              <View style={styles.connCardHeader}>
-                <View style={[styles.connIconCircle, { backgroundColor: ui.cardAlt, borderColor: ui.border }]}>
-                  <Ionicons name="color-palette-outline" size={20} color={accentColor} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.connCardTitle, { color: ui.text }]}>{isAr ? 'ألوان الواجهة' : 'Accent Colors'}</Text>
-                  <Text style={[styles.connCardSub, { color: ui.sub }]}>{isAr ? 'اختر اللون المفضل للأزرار والإضاءة' : 'Select a highlight color for buttons'}</Text>
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
-                {ACCENT_PALETTE.map((item) => {
-                  const selected = accentColor === item.color;
-                  return (
-                    <Pressable
-                      key={item.id}
-                      onPress={() => setAccentColor(item.color)}
-                      style={{
-                        width: '48%', flexDirection: 'row', alignItems: 'center', gap: 10,
-                        paddingVertical: 12, paddingHorizontal: 12, borderRadius: 14,
-                        backgroundColor: selected ? ui.cardAlt : ui.bg,
-                        borderWidth: selected ? 2 : 1,
-                        borderColor: selected ? item.color : ui.border,
-                      }}
-                    >
-                      <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: item.color, alignItems: 'center', justifyContent: 'center' }}>
-                        {selected && <Ionicons name="checkmark" size={15} color="#0A1012" />}
-                      </View>
-                      <Text style={{ color: ui.text, fontWeight: selected ? '800' : '600', fontSize: 13 }}>
-                        {isAr ? item.ar : item.en}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <Pressable
-              onPress={() => setSettingsOpen(false)}
-              style={{ marginTop: 6, backgroundColor: accentColor, paddingVertical: 14, borderRadius: 16, alignItems: 'center' }}
-            >
-              <Text style={{ color: '#0A1012', fontWeight: '800', fontSize: 15 }}>
-                {isAr ? 'حفظ والعودة للريموت' : 'Done & Back to Remote'}
+      <RemoteExperience
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        onSendKey={handleSendKey}
+        onOpenSettings={() => setSettingsModalVisible(true)}
+        colors={colors}
+        isConnected={connectionStatus === 'connected'}
+        apps={state.customApps}
+        onLaunchApp={handleLaunchApp}
+        mouse={mouseController}
+      />
+      <Modal
+        visible={deviceModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setDeviceModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                إدارة الأجهزة والاتصال
               </Text>
-            </Pressable>
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
-
-      <Modal visible={appsModalOpen} transparent animationType="fade" onRequestClose={() => setAppsModalOpen(false)}>
-
-        <View style={styles.modalBackdrop}>
-          <View style={styles.appsModalCard}>
-            <View style={styles.appsModalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <Ionicons name="apps" size={20} color={accentColor} />
-                <View><Text style={styles.appsModalTitle}>TV apps</Text><Text style={styles.appsModalSub}>{connectedName ? `Launch on ${connectedName}` : 'Tap any app to open on TV Box'}</Text></View>
-              </View>
-              <Pressable onPress={() => setAppsModalOpen(false)} style={styles.closeModalBtn}><Ionicons name="close" size={18} color="#CBD5E1" /></Pressable>
-            </View>
-            <FlatList data={TV_APPS_LIST} keyExtractor={(item) => item.id} numColumns={2} columnWrapperStyle={{ gap: 10 }} contentContainerStyle={{ gap: 10, paddingTop: 12 }} renderItem={({ item }) => (
-              <Pressable onPress={() => { MagicControl?.launchTvApp?.(item.pkg).catch(() => {}); setAppsModalOpen(false); }} style={styles.appTile}>
-                <Ionicons name={item.icon as any} size={22} color={item.color} /><Text style={styles.appTileName}>{item.name}</Text>
+              <Pressable onPress={() => setDeviceModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
-            )} />
+            </View>
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
+                الأجهزة المحفوظة
+              </Text>
+
+              {state.devices.length === 0 ? (
+                <Text style={[styles.emptyHint, { color: colors.secondary }]}>
+                  لا توجد أجهزة محفوظة حالياً. ابحث في الشبكة أو أضف جهازك يدوياً.
+                </Text>
+              ) : (
+                state.devices.map((dev) => {
+                  const isSelected = dev.id === state.activeDeviceId;
+                  return (
+                    <View
+                      key={dev.id}
+                      style={[
+                        styles.deviceRow,
+                        {
+                          backgroundColor: isSelected ? colors.cardAlt : colors.input,
+                          borderColor: isSelected ? '#7CE3C3' : colors.border,
+                        },
+                      ]}
+                    >
+                      <Pressable
+                        style={styles.deviceRowMain}
+                        onPress={() => {
+                          setDeviceModalVisible(false);
+                          connectToDevice(dev);
+                        }}
+                      >
+                        <Text style={[styles.deviceName, { color: colors.text }]}>
+                          {dev.name}
+                        </Text>
+                        <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                          {dev.transport === 'bluetooth'
+                            ? `Bluetooth HID · ${dev.bluetoothMac || 'مقترن'}`
+                            : `${dev.ip}:${dev.port} · ${dev.protocol.toUpperCase()}`}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => handleRemoveDevice(dev.id)}
+                        style={styles.deleteBtn}
+                      >
+                        <Ionicons name="trash-outline" size={18} color="#F87171" />
+                      </Pressable>
+                    </View>
+                  );
+                })
+              )}
+
+              <View style={styles.scanActionsRow}>
+                <Pressable
+                  onPress={handleScanNetwork}
+                  disabled={scanning}
+                  style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+                >
+                  {scanning ? (
+                    <ActivityIndicator size="small" color="#081012" />
+                  ) : (
+                    <Ionicons name="wifi-outline" size={18} color="#081012" />
+                  )}
+                  <Text style={styles.primaryActionText}>
+                    {scanning ? 'جاري الفحص...' : 'فحص شبكة Wi-Fi'}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={handleScanBluetooth}
+                  disabled={btScanning}
+                  style={[
+                    styles.secondaryActionBtn,
+                    { backgroundColor: colors.cardAlt, borderColor: colors.border },
+                  ]}
+                >
+                  {btScanning ? (
+                    <ActivityIndicator size="small" color={colors.text} />
+                  ) : (
+                    <Ionicons name="bluetooth-outline" size={18} color={colors.text} />
+                  )}
+                  <Text style={[styles.secondaryActionText, { color: colors.text }]}>
+                    أجهزة Bluetooth
+                  </Text>
+                </Pressable>
+              </View>
+
+              {scanProgressText ? (
+                <Text style={[styles.scanStatusText, { color: colors.secondary }]}>
+                  {scanProgressText}
+                </Text>
+              ) : null}
+
+              {discoveredDevices.map((item) => (
+                <Pressable
+                  key={item.id}
+                  onPress={() => handleAddDiscoveredDevice(item)}
+                  style={[
+                    styles.discoveredRow,
+                    { backgroundColor: colors.cardAlt, borderColor: '#7CE3C3' },
+                  ]}
+                >
+                  <View>
+                    <Text style={[styles.deviceName, { color: colors.text }]}>
+                      {item.name}
+                    </Text>
+                    <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                      {item.ip}:{item.port}
+                    </Text>
+                  </View>
+                  <Text style={styles.connectPillText}>اتصال</Text>
+                </Pressable>
+              ))}
+
+              {btDevices.map((bt) => (
+                <Pressable
+                  key={bt.address}
+                  onPress={() => {
+                    const btDev: SavedDevice = {
+                      id: `bt-${bt.address}`,
+                      name: bt.name,
+                      ip: '0.0.0.0',
+                      port: 0,
+                      protocol: 'adb',
+                      transport: 'bluetooth',
+                      bluetoothMac: bt.address,
+                      lastSeen: 'Bluetooth HID',
+                    };
+                    handleAddDiscoveredDevice(btDev);
+                  }}
+                  style={[
+                    styles.discoveredRow,
+                    { backgroundColor: colors.cardAlt, borderColor: colors.border },
+                  ]}
+                >
+                  <View>
+                    <Text style={[styles.deviceName, { color: colors.text }]}>
+                      {bt.name}
+                    </Text>
+                    <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                      {bt.address}
+                    </Text>
+                  </View>
+                  <Text style={styles.connectPillText}>ربط HID</Text>
+                </Pressable>
+              ))}
+
+              <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
+                إضافة يدوية
+              </Text>
+
+              <TextInput
+                value={manualName}
+                onChangeText={setManualName}
+                placeholder="اسم الجهاز (مثال: Magic A200 Pro)"
+                placeholderTextColor={colors.secondary}
+                style={[
+                  styles.inputField,
+                  {
+                    backgroundColor: colors.input,
+                    borderColor: colors.border,
+                    color: colors.text,
+                  },
+                ]}
+              />
+
+              <View style={styles.transportRow}>
+                {(['wifi', 'bluetooth'] as const).map((t) => (
+                  <Pressable
+                    key={t}
+                    onPress={() => setManualTransport(t)}
+                    style={[
+                      styles.transportChip,
+                      {
+                        backgroundColor:
+                          manualTransport === t ? colors.cardAlt : colors.input,
+                        borderColor:
+                          manualTransport === t ? '#7CE3C3' : colors.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.transportChipText,
+                        { color: manualTransport === t ? '#7CE3C3' : colors.text },
+                      ]}
+                    >
+                      {t === 'wifi' ? 'شبكة Wi-Fi (IP)' : 'Bluetooth HID'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {manualTransport === 'wifi' ? (
+                <View style={styles.ipPortRow}>
+                  <TextInput
+                    value={manualIp}
+                    onChangeText={setManualIp}
+                    placeholder="192.168.1.100"
+                    placeholderTextColor={colors.secondary}
+                    keyboardType="numeric"
+                    style={[
+                      styles.inputField,
+                      styles.ipInput,
+                      {
+                        backgroundColor: colors.input,
+                        borderColor: colors.border,
+                        color: colors.text,
+                      },
+                    ]}
+                  />
+                  <TextInput
+                    value={manualPort}
+                    onChangeText={setManualPort}
+                    placeholder="5555"
+                    placeholderTextColor={colors.secondary}
+                    keyboardType="numeric"
+                    style={[
+                      styles.inputField,
+                      styles.portInput,
+                      {
+                        backgroundColor: colors.input,
+                        borderColor: colors.border,
+                        color: colors.text,
+                      },
+                    ]}
+                  />
+                </View>
+              ) : (
+                <TextInput
+                  value={manualBtMac}
+                  onChangeText={setManualBtMac}
+                  placeholder="عنوان MAC للبلوتوث (اختياري)"
+                  placeholderTextColor={colors.secondary}
+                  style={[
+                    styles.inputField,
+                    {
+                      backgroundColor: colors.input,
+                      borderColor: colors.border,
+                      color: colors.text,
+                    },
+                  ]}
+                />
+              )}
+
+              <Pressable
+                onPress={handleSaveManualDevice}
+                style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+              >
+                <Ionicons name="checkmark-circle-outline" size={19} color="#081012" />
+                <Text style={styles.primaryActionText}>حفظ والاتصال</Text>
+              </Pressable>
+            </ScrollView>
           </View>
         </View>
       </Modal>
 
-      <Modal visible={necModalOpen} transparent animationType="slide" onRequestClose={() => setNecModalOpen(false)}>
+      <Modal
+        visible={textModalVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setTextModalVisible(false)}
+      >
         <View style={styles.modalBackdrop}>
-          <View style={[styles.appsModalCard, { maxHeight: '75%' }]}>
-            <View style={styles.appsModalHeader}>
-              <View><Text style={styles.appsModalTitle}>{activeTvBrand.name} Codes ({activeTvBrand.address})</Text><Text style={styles.appsModalSub}>Edit hex command per remote button</Text></View>
-              <Pressable onPress={() => setNecModalOpen(false)} style={styles.closeModalBtn}><Ionicons name="close" size={18} color="#CBD5E1" /></Pressable>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                إرسال نص إلى التلفاز
+              </Text>
+              <Pressable onPress={() => setTextModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </Pressable>
             </View>
-            <ScrollView style={{ marginTop: 10 }} contentContainerStyle={{ gap: 8 }}>
-              {Object.entries(activeTvBrand.keys).map(([btnKey, defaultHex]) => (
-                <View key={btnKey} style={styles.necEditRow}>
-                  <Text style={styles.necEditLabel}>{btnKey.toUpperCase()}</Text>
-                  <TextInput value={customKeyMap[btnKey] ?? defaultHex} onChangeText={(txt) => setCustomKeyMap((prev) => ({ ...prev, [btnKey]: txt }))} style={styles.necEditInput} />
+
+            <TextInput
+              value={tvTextInput}
+              onChangeText={setTvTextInput}
+              placeholder="اكتب كلمة البحث أو النص هنا..."
+              placeholderTextColor={colors.secondary}
+              autoFocus
+              style={[
+                styles.inputField,
+                {
+                  backgroundColor: colors.input,
+                  borderColor: colors.border,
+                  color: colors.text,
+                },
+              ]}
+            />
+
+            <View style={styles.modalFooterRow}>
+              <Pressable
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setTextModalVisible(false);
+                }}
+                style={[
+                  styles.secondaryActionBtn,
+                  { backgroundColor: colors.cardAlt, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.secondaryActionText, { color: colors.text }]}>
+                  إلغاء
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={handleSendTvText}
+                disabled={sendingText}
+                style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+              >
+                <Text style={styles.primaryActionText}>
+                  {sendingText ? 'جاري الإرسال...' : 'إرسال النص'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={settingsModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setSettingsModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                إعدادات الريموت والماوس
+              </Text>
+              <Pressable onPress={() => setSettingsModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              <Pressable
+                onPress={() =>
+                  setState((prev) => ({
+                    ...prev,
+                    hapticsEnabled: !prev.hapticsEnabled,
+                  }))
+                }
+                style={[
+                  styles.settingToggleRow,
+                  { backgroundColor: colors.input, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  الاهتزاز اللمسي عند الضغط (Haptics)
+                </Text>
+                <Text style={styles.settingValueAccent}>
+                  {state.hapticsEnabled ? 'مفعّل' : 'متوقف'}
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() =>
+                  setState((prev) => ({
+                    ...prev,
+                    autoConnect: !prev.autoConnect,
+                  }))
+                }
+                style={[
+                  styles.settingToggleRow,
+                  { backgroundColor: colors.input, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  الاتصال التلقائي بآخر جهاز
+                </Text>
+                <Text style={styles.settingValueAccent}>
+                  {state.autoConnect ? 'مفعّل' : 'متوقف'}
+                </Text>
+              </Pressable>
+
+              <View
+                style={[
+                  styles.sensitivityBox,
+                  { backgroundColor: colors.input, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  حساسية الماوس واللمس: {state.mouseSensitivity.toFixed(2)}x
+                </Text>
+                <View style={styles.sensitivityBtnsRow}>
+                  {[0.8, 1.35, 1.9, 2.5].map((preset) => {
+                    const active =
+                      Math.abs(state.mouseSensitivity - preset) < 0.08;
+                    return (
+                      <Pressable
+                        key={preset}
+                        onPress={() =>
+                          setState((prev) => ({
+                            ...prev,
+                            mouseSensitivity: preset,
+                          }))
+                        }
+                        style={[
+                          styles.presetPill,
+                          {
+                            backgroundColor: active ? '#7CE3C3' : colors.cardAlt,
+                            borderColor: active ? '#7CE3C3' : colors.border,
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.presetPillText,
+                            { color: active ? '#081012' : colors.text },
+                          ]}
+                        >
+                          {preset}x
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
                 </View>
-              ))}
+              </View>
+
+              <View style={styles.customAppsHeader}>
+                <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
+                  اختصارات التطبيقات
+                </Text>
+                <Pressable
+                  onPress={() => {
+                    setSettingsModalVisible(false);
+                    setAddAppModalVisible(true);
+                  }}
+                  style={styles.addShortcutBtn}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color="#7CE3C3" />
+                  <Text style={styles.addShortcutText}>إضافة تطبيق</Text>
+                </Pressable>
+              </View>
+
+              <FlatList
+                data={state.customApps}
+                keyExtractor={(item) => item.id}
+                scrollEnabled={false}
+                renderItem={({ item }) => (
+                  <View
+                    style={[
+                      styles.shortcutListRow,
+                      { backgroundColor: colors.input, borderColor: colors.border },
+                    ]}
+                  >
+                    <View>
+                      <Text style={[styles.deviceName, { color: colors.text }]}>
+                        {item.name}
+                      </Text>
+                      <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                        {item.packageName}
+                      </Text>
+                    </View>
+                    {state.customApps.length > 1 ? (
+                      <Pressable
+                        onPress={() =>
+                          setState((prev) => ({
+                            ...prev,
+                            customApps: prev.customApps.filter(
+                              (a) => a.id !== item.id,
+                            ),
+                          }))
+                        }
+                      >
+                        <Ionicons
+                          name="remove-circle-outline"
+                          size={19}
+                          color="#F87171"
+                        />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                )}
+              />
+
+              <Pressable
+                onPress={() => setSettingsModalVisible(false)}
+                style={[styles.settingsDoneButton, { backgroundColor: '#7CE3C3' }]}
+              >
+                <Text style={styles.primaryActionText}>تم</Text>
+              </Pressable>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={addAppModalVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setAddAppModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                إضافة اختصار تطبيق
+              </Text>
+              <Pressable onPress={() => setAddAppModalVisible(false)}>
+                <Ionicons name="close" size={24} color={colors.text} />
+              </Pressable>
+            </View>
+
+            <TextInput
+              value={newAppName}
+              onChangeText={setNewAppName}
+              placeholder="اسم التطبيق (مثال: Plex)"
+              placeholderTextColor={colors.secondary}
+              style={[
+                styles.inputField,
+                {
+                  backgroundColor: colors.input,
+                  borderColor: colors.border,
+                  color: colors.text,
+                },
+              ]}
+            />
+
+            <TextInput
+              value={newAppPackage}
+              onChangeText={setNewAppPackage}
+              placeholder="اسم الحزمة (مثال: com.plexapp.android)"
+              placeholderTextColor={colors.secondary}
+              autoCapitalize="none"
+              style={[
+                styles.inputField,
+                {
+                  backgroundColor: colors.input,
+                  borderColor: colors.border,
+                  color: colors.text,
+                },
+              ]}
+            />
+
+            <Pressable
+              onPress={handleAddCustomApp}
+              style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+            >
+              <Text style={styles.primaryActionText}>حفظ الاختصار</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
     </SafeAreaView>
   );
 }
-
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#0A1012' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 6 },
-  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  logoBadge: { width: 34, height: 34, borderRadius: 10, backgroundColor: '#132224', borderWidth: 1, borderColor: '#284E46', alignItems: 'center', justifyContent: 'center' },
-  appTitle: { color: '#F8FAFC', fontSize: 18, fontWeight: '700' },
-  plusBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: '#7CE3C3', alignItems: 'center', justifyContent: 'center' },
-  statusBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 16, marginBottom: 6, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 18, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  dotAmber: { backgroundColor: '#F59E0B' },
-  dotGreen: { backgroundColor: '#7CE3C3' },
-  statusTitle: { color: '#F8FAFC', fontSize: 13, fontWeight: '700' },
-  statusSub: { color: '#94A3B8', fontSize: 11, marginTop: 1 },
-  statusCheck: { width: 22, height: 22, borderRadius: 11, borderWidth: 1.5, borderColor: '#475569', alignItems: 'center', justifyContent: 'center' },
-  statusCheckActive: { backgroundColor: '#7CE3C3', borderColor: '#7CE3C3' },
-  tvBrandPill: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 18, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  tvBrandPillActive: { backgroundColor: '#7CE3C3', borderColor: '#7CE3C3' },
-  tvBrandPillText: { color: '#CBD5E1', fontSize: 12, fontWeight: '600' },
-  tvBrandPillTextActive: { color: '#0A1012', fontWeight: '800' },
-  bottomNav: { flexDirection: 'row', marginHorizontal: 14, marginBottom: 8, marginTop: 4, padding: 5, borderRadius: 22, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  navItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 11, borderRadius: 17 },
-  navItemActive: { backgroundColor: '#182629', borderWidth: 1, borderColor: '#2B5349' },
-  navText: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
-  navTextActive: { color: '#7CE3C3', fontWeight: '700' },
-  sectionKicker: { color: '#94A3B8', fontSize: 10, fontWeight: '700', letterSpacing: 1 },
-  sectionHeading: { color: '#F8FAFC', fontSize: 26, fontWeight: '800', marginBottom: 4 },
-  connScrollBody: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 16, gap: 12 },
-  connCard: { backgroundColor: '#11191C', borderRadius: 22, borderWidth: 1, borderColor: '#1D2B30', padding: 16, gap: 12 },
-  connCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  connIconCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#152426', borderWidth: 1, borderColor: '#233B3E', alignItems: 'center', justifyContent: 'center' },
-  connCardTitle: { color: '#F8FAFC', fontSize: 16, fontWeight: '700' },
-  connCardSub: { color: '#94A3B8', fontSize: 12 },
-  mintPillBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: '#7CE3C3', paddingHorizontal: 16, paddingVertical: 11, borderRadius: 16 },
-  mintWideBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#7CE3C3', paddingVertical: 13, borderRadius: 16 },
-  mintPillBtnText: { color: '#0A1012', fontSize: 13, fontWeight: '700' },
-  scanStateLabel: { color: '#94A3B8', fontSize: 12 },
-  emptyDiscoveryBox: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, backgroundColor: '#0E1518', borderWidth: 1, borderColor: '#1D2B30' },
-  emptyDiscoveryText: { color: '#CBD5E1', fontSize: 13 },
-  foundDeviceRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 16, backgroundColor: '#152024', borderWidth: 1, borderColor: '#223338' },
-  foundDeviceName: { color: '#F8FAFC', fontSize: 14, fontWeight: '700' },
-  foundDeviceSub: { color: '#94A3B8', fontSize: 11 },
-  connectActionText: { color: '#7CE3C3', fontSize: 13, fontWeight: '700' },
-  dividerLine: { height: 1, backgroundColor: '#1D2B30', marginVertical: 2 },
-  subFieldLabel: { color: '#E2E8F0', fontSize: 13, fontWeight: '700' },
-  manualIpField: { backgroundColor: '#0E1518', borderWidth: 1, borderColor: '#1D2B30', borderRadius: 16, paddingHorizontal: 14, paddingVertical: 12, color: '#F8FAFC', fontSize: 14 },
-  connectIpBtn: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: '#1C3B36', paddingHorizontal: 16, paddingVertical: 11, borderRadius: 16 },
-  connectIpBtnActive: { backgroundColor: '#7CE3C3' },
-  connectIpBtnText: { color: '#4E7A6E', fontSize: 13, fontWeight: '700' },
-  irNoticeBox: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 16, backgroundColor: '#0E1518', borderWidth: 1, borderColor: '#1D2B30' },
-  irNoticeText: { color: '#CBD5E1', fontSize: 12, flex: 1, lineHeight: 17 },
-  necProfileRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  necChip: { paddingHorizontal: 13, paddingVertical: 9, borderRadius: 16, backgroundColor: '#0E1518', borderWidth: 1, borderColor: '#1D2B30' },
-  necChipActive: { borderColor: '#7CE3C3', backgroundColor: '#152526' },
-  necChipText: { color: '#CBD5E1', fontSize: 12, fontWeight: '600' },
-  irUseRow: { flexDirection: 'row', gap: 8, marginTop: 2 },
-  irUseBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 16, backgroundColor: '#162125', borderWidth: 1, borderColor: '#223238' },
-  irUseBtnActive: { borderColor: '#7CE3C3', backgroundColor: '#152526' },
-  irUseBtnText: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  acScrollBody: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 14, gap: 10 },
-  brandPillsScroll: { gap: 8, paddingVertical: 2 },
-  acBrandPill: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  acBrandPillActive: { backgroundColor: '#7CE3C3', borderColor: '#7CE3C3' },
-  acBrandPillText: { color: '#CBD5E1', fontSize: 13, fontWeight: '600' },
-  acBrandPillTextActive: { color: '#0A1012', fontWeight: '800' },
-  irStateCard: { backgroundColor: '#11191C', borderRadius: 22, borderWidth: 1, borderColor: '#1D2B30', padding: 16, gap: 10 },
-  irStateTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  irStateHeader: { color: '#94A3B8', fontSize: 10, fontWeight: '700', letterSpacing: 1 },
-  irPowerBadge: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10, backgroundColor: '#182226', borderWidth: 1, borderColor: '#25353B' },
-  irPowerBadgeOn: { borderColor: '#2B594E', backgroundColor: '#142624' },
-  irPowerBadgeText: { color: '#94A3B8', fontSize: 10, fontWeight: '800' },
-  irStateMidRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  irTempValue: { color: '#F8FAFC', fontSize: 48, fontWeight: '800', lineHeight: 52 },
-  irTempUnit: { color: '#94A3B8', fontSize: 20, fontWeight: '700', marginTop: 8, marginLeft: 2 },
-  irModeLabel: { color: '#7CE3C3', fontSize: 17, fontWeight: '700' },
-  irFanLabel: { color: '#94A3B8', fontSize: 10, fontWeight: '700', letterSpacing: 0.8, marginTop: 2 },
-  irDisclaimer: { color: '#64748B', fontSize: 11, lineHeight: 15 },
-  acPowerTempRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  acMintPowerBtn: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#7CE3C3', alignItems: 'center', justifyContent: 'center' },
-  acTempCapsule: { flex: 1, height: 54, borderRadius: 27, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 8 },
-  acStepCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#162125', borderWidth: 1, borderColor: '#223238', alignItems: 'center', justifyContent: 'center' },
-  acCapsuleTempText: { color: '#E2E8F0', fontSize: 16, fontWeight: '700' },
-  acGroupLabel: { color: '#E2E8F0', fontSize: 13, fontWeight: '700', marginTop: 2 },
-  acGridRow: { flexDirection: 'row', gap: 8 },
-  acOptionTile: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 13, borderRadius: 18, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  acOptionTileActive: { borderColor: '#7CE3C3', backgroundColor: '#152526' },
-  acOptionText: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
-  acFanRow: { flexDirection: 'row', gap: 8 },
-  acFanPill: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: 18, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  acFanPillActive: { borderColor: '#7CE3C3', backgroundColor: '#152526' },
-  acFanPillText: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
-  acExtrasRow: { flexDirection: 'row', gap: 8, marginTop: 2 },
-  acExtraCard: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 18, backgroundColor: '#11191C', borderWidth: 1, borderColor: '#1D2B30' },
-  acExtraText: { color: '#E2E8F0', fontSize: 12, fontWeight: '600' },
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', padding: 20 },
-  appsModalCard: { backgroundColor: '#131D20', borderRadius: 24, borderWidth: 1, borderColor: '#223338', padding: 16 },
-  appsModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  appsModalTitle: { color: '#F8FAFC', fontSize: 17, fontWeight: '800' },
-  appsModalSub: { color: '#94A3B8', fontSize: 12 },
-  closeModalBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#1C292D', alignItems: 'center', justifyContent: 'center' },
-  appTile: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#182428', borderWidth: 1, borderColor: '#24363C', borderRadius: 16, padding: 13 },
-  appTileName: { color: '#E2E8F0', fontSize: 13, fontWeight: '700' },
-  necEditRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#182428', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12 },
-  necEditLabel: { color: '#E2E8F0', fontSize: 12, fontWeight: '700' },
-  necEditInput: { backgroundColor: '#0E1518', borderWidth: 1, borderColor: '#24363C', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4, color: '#7CE3C3', fontSize: 12, width: 72, textAlign: 'center' },
+  safeArea: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  headerTitles: {
+    flex: 1,
+  },
+  brandTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  deviceSubtitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  feedbackBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    gap: 8,
+  },
+  feedbackText: {
+    fontSize: 11,
+    fontWeight: '600',
+    flex: 1,
+  },
+  badgePill: {
+    backgroundColor: '#7CE3C3',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  badgeText: {
+    color: '#081012',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    maxHeight: '86%',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    padding: 16,
+    gap: 12,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  modalScroll: {
+    maxHeight: 520,
+  },
+  modalScrollContent: {
+    gap: 10,
+    paddingBottom: 16,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  emptyHint: {
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  deviceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  deviceRowMain: {
+    flex: 1,
+  },
+  deviceName: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  deviceMeta: {
+    fontSize: 11,
+    marginTop: 2,
+  },
+  deleteBtn: {
+    padding: 6,
+  },
+  scanActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  primaryActionBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+  },
+  primaryActionText: {
+    color: '#081012',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  secondaryActionBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+  },
+  secondaryActionText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  scanStatusText: {
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  discoveredRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 11,
+    borderRadius: 13,
+    borderWidth: 1,
+  },
+  connectPillText: {
+    color: '#7CE3C3',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  inputField: {
+    minHeight: 44,
+    borderRadius: 13,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    fontSize: 13,
+  },
+  transportRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  transportChip: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  transportChipText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  ipPortRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  ipInput: {
+    flex: 2,
+  },
+  portInput: {
+    flex: 1,
+  },
+  modalFooterRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  settingToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  settingLabel
+: { fontSize: 12, fontWeight: '800' },
+
+  settingValueAccent: {
+    color: '#7CE3C3',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  sensitivityBox: {
+    padding: 13,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 10,
+  },
+  sensitivityBtnsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  presetPill: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presetPillText: {
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  customAppsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  addShortcutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  addShortcutText: {
+    color: '#7CE3C3',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  shortcutListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 11,
+    borderRadius: 13,
+    borderWidth: 1,
+    marginBottom: 6,
+  },
+  settingsDoneButton: {
+    minHeight: 46,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 6,
+  },
 });

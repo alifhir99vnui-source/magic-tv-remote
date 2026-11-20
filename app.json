@@ -11,7 +11,8 @@
       "backgroundColor": "#0C1115"
     },
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "statusBarHidden": true
     },
     "android": {
       "package": "com.magicremote.tvremote",
@@ -40,7 +41,8 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "./plugins/withMagicHardware"
+      "./plugins/withMagicHardware",
+      "./plugins/withMagicHardware.js"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -56,6 +58,10 @@
         "projectId": "b41ca113-37d2-4297-965a-41ac88a62c03"
       }
     },
-    "owner": "murtaza979"
+    "owner": "murtaza979",
+    "androidStatusBar": {
+      "hidden": true,
+      "translucent": true
+    }
   }
 }
