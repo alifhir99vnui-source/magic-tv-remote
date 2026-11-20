@@ -31,7 +31,13 @@ jobs:
           java-version: 17
 
       - name: Build APK with Gradle
-        run: cd android && ./gradlew assembleRelease --no-daemon
+        run: |
+          cd android
+          for i in 1 2 3; do
+            ./gradlew assembleRelease --no-daemon --refresh-dependencies && break
+            echo "Gradle attempt $i failed, retrying..."
+            sleep 5
+          done
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
