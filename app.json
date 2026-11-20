@@ -43,7 +43,8 @@
       "expo-secure-store",
       "./plugins/withMagicHardware",
       "./plugins/withFullscreen",
-      "./plugins/withNativeRemote"
+      "./plugins/withNativeRemote",
+      "./plugins/withBundledDebug"
     ],
     "experiments": {
       "typedRoutes": true,
