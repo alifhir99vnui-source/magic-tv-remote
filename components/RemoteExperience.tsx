@@ -40,6 +40,8 @@ export interface RemoteMouseController {
   onRightClick: () => void;
   onRecenter: () => void;
   onScroll: (deltaY: number) => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
 }
 
 interface RemoteExperienceProps {
@@ -47,6 +49,8 @@ interface RemoteExperienceProps {
   onTabChange: (tab: 'remote' | 'mouse') => void;
   onSendKey: (key: string) => void;
   onOpenSettings?: () => void;
+  onOpenKeyboard?: () => void;
+  onVoiceSearch?: () => void;
   colors: RemoteExperienceColors;
   isConnected: boolean;
   apps: RemoteAppShortcut[];
@@ -61,6 +65,8 @@ export function RemoteExperience({
   onTabChange,
   onSendKey,
   onOpenSettings,
+  onOpenKeyboard,
+  onVoiceSearch,
   colors,
   apps,
   onLaunchApp,
@@ -69,6 +75,7 @@ export function RemoteExperience({
   const [keypadVisible, setKeypadVisible] = useState(false);
   const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
   const movedRef = useRef(false);
+  const draggingRef = useRef(false);
 
   const touchpadResponder = useMemo(
     () =>
@@ -81,18 +88,19 @@ export function RemoteExperience({
             y: evt.nativeEvent.pageY,
           };
           movedRef.current = false;
+          draggingRef.current = false;
         },
         onPanResponderMove: (evt) => {
           if (!lastTouchRef.current) return;
-          const dx =
-            (evt.nativeEvent.pageX - lastTouchRef.current.x) *
-            mouse.sensitivity;
-          const dy =
-            (evt.nativeEvent.pageY - lastTouchRef.current.y) *
-            mouse.sensitivity;
+          const dx = evt.nativeEvent.pageX - lastTouchRef.current.x;
+          const dy = evt.nativeEvent.pageY - lastTouchRef.current.y;
 
           if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-            movedRef.current = true;
+            if (!movedRef.current) {
+              movedRef.current = true;
+              draggingRef.current = true;
+              mouse.onDragStart();
+            }
             mouse.onTouchpadDelta(dx, dy);
             lastTouchRef.current = {
               x: evt.nativeEvent.pageX,
@@ -101,11 +109,20 @@ export function RemoteExperience({
           }
         },
         onPanResponderRelease: () => {
-          if (!movedRef.current) {
+          if (draggingRef.current) {
+            mouse.onDragEnd();
+          } else if (!movedRef.current) {
             mouse.onTouchpadPress();
           }
           lastTouchRef.current = null;
           movedRef.current = false;
+          draggingRef.current = false;
+        },
+        onPanResponderTerminate: () => {
+          if (draggingRef.current) mouse.onDragEnd();
+          lastTouchRef.current = null;
+          movedRef.current = false;
+          draggingRef.current = false;
         },
       }),
     [mouse],
@@ -200,6 +217,22 @@ export function RemoteExperience({
             >
               <Ionicons
                 name="volume-mute-outline"
+                size={20}
+                color={colors.text}
+              />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="لوحة المفاتيح"
+              onPress={onOpenKeyboard}
+              style={[
+                styles.circleActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons
+                name="keypad-outline"
                 size={20}
                 color={colors.text}
               />
@@ -445,7 +478,7 @@ export function RemoteExperience({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="البحث الصوتي"
-              onPress={() => onSendKey('voice')}
+              onPress={onVoiceSearch ?? (() => onSendKey('voice'))}
               style={[
                 styles.voiceButton,
                 { backgroundColor: colors.cardAlt, borderColor: ACCENT },
@@ -516,6 +549,55 @@ export function RemoteExperience({
         </ScrollView>
       ) : (
         <View style={styles.mouseContainer}>
+          <View style={styles.mouseModeRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: mouse.mode === 'touchpad' }}
+              onPress={() => mouse.setMode('touchpad')}
+              style={[
+                styles.mouseModePill,
+                {
+                  backgroundColor:
+                    mouse.mode === 'touchpad' ? colors.cardAlt : colors.card,
+                  borderColor: mouse.mode === 'touchpad' ? ACCENT : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.mouseModeText,
+                  { color: mouse.mode === 'touchpad' ? ACCENT : colors.text },
+                ]}
+              >
+                لوحة لمس
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: mouse.mode === 'air' }}
+              disabled={!mouse.airSupported}
+              onPress={() => mouse.setMode(mouse.mode === 'air' ? 'touchpad' : 'air')}
+              style={[
+                styles.mouseModePill,
+                {
+                  backgroundColor: mouse.mode === 'air' ? colors.cardAlt : colors.card,
+                  borderColor: mouse.mode === 'air' ? ACCENT : colors.border,
+                  opacity: mouse.airSupported ? 1 : 0.5,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.mouseModeText,
+                  { color: mouse.mode === 'air' ? ACCENT : colors.text },
+                ]}
+              >
+                {mouse.airSupported ? 'ماوس هوائي' : 'الماوس الهوائي غير متاح'}
+              </Text>
+            </Pressable>
+          </View>
+
           <View
             {...touchpadResponder.panHandlers}
             style={[
@@ -536,8 +618,47 @@ export function RemoteExperience({
               {mouse.mode === 'air' ? mouse.airStatus : mouse.pointerStatus}
             </Text>
             <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
-              اسحب لتحريك المؤشر · اضغط للنقر
+              اضغط للنقر · اسحب للسحب (Drag) · استخدم الأزرار أدناه للنقر الأيمن
             </Text>
+          </View>
+
+          <View style={styles.mouseButtonsRow}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={mouse.onTouchpadPress}
+              style={[
+                styles.mouseActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.mouseActionText, { color: colors.text }]}>
+                نقرة يسرى
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={mouse.onRightClick}
+              style={[
+                styles.mouseActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.mouseActionText, { color: colors.text }]}>
+                نقرة يمنى
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={mouse.onRecenter}
+              style={[
+                styles.mouseActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.mouseActionText, { color: ACCENT }]}>
+                توسيط
+              </Text>
+            </Pressable>
           </View>
 
           <View style={styles.scrollControlsRow}>
@@ -611,6 +732,7 @@ const styles = StyleSheet.create({
   },
   topActionsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,

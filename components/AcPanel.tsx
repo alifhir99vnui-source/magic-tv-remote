@@ -11,25 +11,26 @@ import {
   RemoteExperienceColors,
 } from './RemoteExperience';
 import {
+  AC_BRANDS,
+  AC_FANS,
+  AC_MODES,
   AcBrand,
-  AcFan,
-  AcMode,
   AcState,
+  getAcBrandProfile,
 } from '../utils/acIr';
 
 const ACCENT = '#7CE3C3';
-const BRANDS: AcBrand[] = ['Tosot', 'Gree', 'LG', 'Samsung', 'Midea'];
-const MODES: AcMode[] = ['Auto', 'Cool', 'Heat', 'Dry', 'Fan'];
-const FANS: AcFan[] = ['Auto', 'Low', 'Medium', 'High'];
 
 interface AcPanelProps {
   colors: RemoteExperienceColors;
   onSendIr: (brand: AcBrand, state: AcState) => Promise<void>;
   disabled?: boolean;
+  irMissing?: boolean;
 }
 
-export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
+export function AcPanel({ colors, onSendIr, disabled, irMissing }: AcPanelProps) {
   const [brand, setBrand] = useState<AcBrand>('Tosot');
+  const profile = getAcBrandProfile(brand);
   const [state, setState] = useState<AcState>({
     power: false,
     temperature: 24,
@@ -64,14 +65,23 @@ export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
         showsHorizontalScrollIndicator={false}
         style={styles.brandRow}
       >
-        {BRANDS.map((item) => {
-          const selected = brand === item;
+        {AC_BRANDS.map((item) => {
+          const selected = brand === item.brand;
           return (
             <Pressable
-              key={item}
+              key={item.brand}
               accessibilityRole="button"
               accessibilityState={{ selected }}
-              onPress={() => setBrand(item)}
+              onPress={() => {
+                setBrand(item.brand);
+                setState((current) => ({
+                  ...current,
+                  temperature: Math.min(
+                    item.maxTemperature,
+                    Math.max(item.minTemperature, current.temperature),
+                  ),
+                }));
+              }}
               style={[
                 styles.brandPill,
                 {
@@ -86,12 +96,25 @@ export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
                   { color: selected ? '#0A1012' : colors.text },
                 ]}
               >
-                {item}
+                {item.label}
               </Text>
             </Pressable>
           );
         })}
       </ScrollView>
+
+      <Text style={[styles.protocolHint, { color: colors.secondary }]}>
+        {`${profile.protocol} · ${profile.detail}`}
+      </Text>
+
+      {irMissing ? (
+        <View style={[styles.irWarning, { backgroundColor: colors.cardAlt, borderColor: '#F87171' }]}>
+          <Ionicons name="warning-outline" size={17} color="#F87171" />
+          <Text style={[styles.irWarningText, { color: colors.text }]}>
+            هذا الجهاز لا يحتوي على مُرسِل IR مدمج. استخدم صندوق Magic A200 Pro أو هاتفاً بمُرسِل IR.
+          </Text>
+        </View>
+      ) : null}
 
       <View
         style={[
@@ -127,9 +150,11 @@ export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="إنقاص الحرارة"
-            onPress={() =>
-              update({ temperature: Math.max(16, state.temperature - 1) })
-            }
+              onPress={() =>
+                update({
+                  temperature: Math.max(profile.minTemperature, state.temperature - 1),
+                })
+              }
             style={[styles.tempButton, { borderColor: colors.border }]}
           >
             <Ionicons name="remove-outline" size={24} color={colors.text} />
@@ -145,9 +170,11 @@ export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="زيادة الحرارة"
-            onPress={() =>
-              update({ temperature: Math.min(30, state.temperature + 1) })
-            }
+              onPress={() =>
+                update({
+                  temperature: Math.min(profile.maxTemperature, state.temperature + 1),
+                })
+              }
             style={[styles.tempButton, { borderColor: colors.border }]}
           >
             <Ionicons name="add-outline" size={24} color={colors.text} />
@@ -163,7 +190,7 @@ export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
       >
         <Text style={[styles.cardTitle, { color: colors.text }]}>الوضع</Text>
         <View style={styles.optionRow}>
-          {MODES.map((mode) => {
+          {AC_MODES.map((mode) => {
             const selected = state.mode === mode;
             return (
               <Pressable
@@ -194,7 +221,7 @@ export function AcPanel({ colors, onSendIr, disabled }: AcPanelProps) {
 
         <Text style={[styles.cardTitle, { color: colors.text }]}>المروحة</Text>
         <View style={styles.optionRow}>
-          {FANS.map((fan) => {
+          {AC_FANS.map((fan) => {
             const selected = state.fan === fan;
             return (
               <Pressable
@@ -318,7 +345,18 @@ const styles = StyleSheet.create({
   content: { padding: 18, paddingBottom: 36 },
   title: { fontSize: 22, fontWeight: '800', marginBottom: 4 },
   subtitle: { fontSize: 12, marginBottom: 14 },
-  brandRow: { marginBottom: 14 },
+  brandRow: { marginBottom: 6 },
+  protocolHint: { fontSize: 11, lineHeight: 16, marginBottom: 12 },
+  irWarning: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 14,
+  },
+  irWarningText: { flex: 1, fontSize: 11, lineHeight: 16 },
   brandPill: {
     paddingHorizontal: 14,
     paddingVertical: 9,

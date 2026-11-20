@@ -12,12 +12,25 @@ const withMagicHardware = (config) => {
       'android.permission.TRANSMIT_IR',
       'android.permission.INTERNET',
       'android.permission.ACCESS_NETWORK_STATE',
+      'android.permission.ACCESS_WIFI_STATE',
+      'android.permission.CHANGE_WIFI_MULTICAST_STATE',
     ];
     for (const p of perms) {
       if (!manifest['uses-permission'].some((x) => x.$['android:name'] === p)) {
         manifest['uses-permission'].push({ $: { 'android:name': p } });
       }
     }
+
+    manifest.queries = manifest.queries || [];
+    const voiceQuery = {
+      intent: [{ action: { $: { 'android:name': 'android.speech.action.RECOGNIZE_SPEECH' } } }],
+    };
+    const hasVoiceQuery = manifest.queries.some(
+      (q) => q.intent && q.intent.some(
+        (i) => i.action && i.action.$ && i.action.$['android:name'] === 'android.speech.action.RECOGNIZE_SPEECH',
+      ),
+    );
+    if (!hasVoiceQuery) manifest.queries.push(voiceQuery);
     return cfg;
   });
 

@@ -25,12 +25,15 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { Gyroscope } from 'expo-sensors';
 import {
   RemoteAppShortcut,
   RemoteExperience,
   RemoteMouseController,
 } from '../components/RemoteExperience';
 import { AcPanel } from '../components/AcPanel';
+import { ConnectionPanel } from '../components/ConnectionPanel';
+import { SavedDevice } from '../utils/device';
 import {
   AcBrand,
   AcState,
@@ -43,18 +46,6 @@ import {
 
 const STORAGE_KEY = '@magic_tv_remote_state_v2';
 const LEGACY_STORAGE_KEY = '@magic_tv_remote_state_v1';
-
-interface SavedDevice {
-  id: string;
-  name: string;
-  ip: string;
-  port: number;
-  protocol: 'adb' | 'ws' | 'http';
-  transport?: 'wifi' | 'bluetooth';
-  bluetoothMac?: string;
-  lastSeen?: string;
-  model?: string;
-}
 
 interface QuickCommand {
   id: string;
@@ -117,6 +108,15 @@ interface MagicHardwareBridge {
   transmitIr?: (carrierFrequency: number, pattern: number[]) => Promise<boolean>;
   launchTvApp?: (packageName: string) => Promise<boolean>;
   hasIrEmitter?: () => Promise<boolean>;
+  startVoiceSearch?: () => Promise<string | boolean>;
+  sendBluetoothHidText?: (text: string) => Promise<boolean>;
+  discoverNetworkDevices?: () => Promise<
+    Array<{ name?: string; ip: string; port: number; source?: string }>
+  >;
+  isBluetoothHidConnected?: () => Promise<boolean>;
+  disconnectBluetoothHid?: () => Promise<boolean>;
+  startMouseDrag?: (button: 'left' | 'right') => Promise<boolean>;
+  endMouseDrag?: () => Promise<boolean>;
 }
 
 const MagicHardware: MagicHardwareBridge | undefined =
@@ -380,16 +380,20 @@ export default function MagicTvRemoteScreen() {
   const [state, setState] = useState<RemoteAppState>(INITIAL_STATE);
   const [hydrated, setHydrated] = useState(false);
 
-  const [screen, setScreen] = useState<'remote' | 'ac'>('remote');
+  const [screen, setScreen] = useState<'remote' | 'ac' | 'connection'>('remote');
   const [activeTab, setActiveTab] = useState<'remote' | 'mouse'>('remote');
+  const [airMode, setAirMode] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<
     'disconnected' | 'connecting' | 'connected'
   >('disconnected');
   const [lastFeedback, setLastFeedback] = useState<string>('جاهز للاتصال بـ Magic A200 Pro');
   const [lastActionBadge, setLastActionBadge] = useState<string | null>(null);
 
-  const [pointerSupported, setPointerSupported] = useState(false);
+  const [pointerSupported, setPointerSupported] = useState(true);
+  const [airSupported, setAirSupported] = useState(false);
   const [pointerStatus, setPointerStatus] = useState('لوحة اللمس جاهزة');
+  const [airStatus, setAirStatus] = useState('الماوس الهوائي متوقف');
+  const [irMissing, setIrMissing] = useState(true);
 
   const [deviceModalVisible, setDeviceModalVisible] = useState(false);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
@@ -432,6 +436,43 @@ export default function MagicTvRemoteScreen() {
     () => state.devices.find((d) => d.id === state.activeDeviceId) ?? null,
     [state.devices, state.activeDeviceId],
   );
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const raw =
+          (await AsyncStorage.getItem(STORAGE_KEY)) ??
+          (await AsyncStorage.getItem(LEGACY_STORAGE_KEY));
+        if (raw && mounted) {
+          const parsed = JSON.parse(raw) as Partial<RemoteAppState>;
+          setState((prev) => ({
+            ...prev,
+            ...parsed,
+            devices: Array.isArray(parsed.devices) ? parsed.devices : prev.devices,
+            quickCommands: Array.isArray(parsed.quickCommands)
+              ? parsed.quickCommands
+              : prev.quickCommands,
+            customApps: Array.isArray(parsed.customApps)
+              ? parsed.customApps
+              : prev.customApps,
+          }));
+        }
+      } catch {
+        // Ignore corrupt storage and use defaults.
+      }
+      if (mounted) setHydrated(true);
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
+  }, [hydrated, state]);
+
   const requestBluetoothPermissions = useCallback(async () => {
     if (Platform.OS !== 'android') return false;
     if (Number(Platform.Version) < 31) return true;
@@ -485,8 +526,15 @@ export default function MagicTvRemoteScreen() {
         ok ? 'جاري الاتصال... انتظر رمز الاقتران إن ظهر' : tvRemote.error,
       );
     },
-    [requestBluetoothPermissions, showFeedback, tvRemote],
+    [requestBluetoothPermissions, showFeedback, tvRemote.connect],
   );
+
+  useEffect(() => {
+    if (!hydrated || !state.autoConnect || !state.activeDeviceId) return;
+    const last = state.devices.find((d) => d.id === state.activeDeviceId);
+    if (!last) return;
+    connectToDevice(last);
+  }, [hydrated, state.autoConnect, state.activeDeviceId, state.devices, connectToDevice]);
 
   const handleSendKey = useCallback(
     (key: string) => {
@@ -501,9 +549,11 @@ export default function MagicTvRemoteScreen() {
       }
       if (activeDevice) {
         sendCommandToTv(activeDevice, { type: 'key', key }, 200).catch(() => {});
+      } else if (MagicHardware?.sendIrKey) {
+        MagicHardware.sendIrKey(key).catch(() => {});
       }
     },
-    [activeDevice, tvRemote],
+    [activeDevice, tvRemote.isConnected, tvRemote.sendKey, tvRemote.sendPower],
   );
 
   const handleLaunchApp = useCallback(
@@ -532,8 +582,8 @@ export default function MagicTvRemoteScreen() {
 
   const handleSendAcIr = useCallback(
     async (brand: AcBrand, acState: AcState) => {
-      if (!MagicHardware?.transmitIr) {
-        showFeedback('مُرسِل IR غير متاح في هذا البناء');
+      if (!MagicHardware?.transmitIr || irMissing) {
+        showFeedback('مُرسِل IR غير متاح على هذا الجهاز — استخدم صندوق Magic A200 Pro');
         return;
       }
       const { carrierFrequency, pattern } = buildAcIrPattern(brand, acState);
@@ -548,22 +598,91 @@ export default function MagicTvRemoteScreen() {
         showFeedback('تعذر إرسال أمر IR — تحقق من مُرسِل IR');
       }
     },
-    [showFeedback],
+    [irMissing, showFeedback],
   );
 
-  const handleSendTvText = useCallback(() => {
-    if (activeDevice) {
-      sendCommandToTv(activeDevice, { type: 'text' }, 300).catch(() => {});
+  const handleSendTvText = useCallback(async () => {
+    const text = tvTextInput.trim();
+    if (!text) {
+      showFeedback('اكتب النص أولاً');
+      return;
     }
-  }, [activeDevice]);
+
+    setSendingText(true);
+    let sent = false;
+    if (activeDevice?.transport === 'bluetooth' && MagicHardware?.sendBluetoothHidText) {
+      try {
+        sent = await MagicHardware.sendBluetoothHidText(text);
+      } catch {
+        sent = false;
+      }
+    }
+    if (!sent && activeDevice) {
+      const result = await sendCommandToTv(
+        activeDevice,
+        { type: 'text', text },
+        400,
+      ).catch(() => ({ ok: false, detail: '' }));
+      sent = result.ok;
+    }
+    setSendingText(false);
+    showFeedback(
+      sent ? `تم إرسال النص: ${text}` : 'تعذر إرسال النص — تحقق من الاتصال',
+    );
+    if (sent) {
+      setTvTextInput('');
+      Keyboard.dismiss();
+      setTextModalVisible(false);
+    }
+  }, [activeDevice, showFeedback, tvTextInput]);
+
+  const handleVoiceSearch = useCallback(async () => {
+    if (!MagicHardware?.startVoiceSearch) {
+      showFeedback('البحث الصوتي الأصلي غير متاح في هذا البناء');
+      return;
+    }
+    try {
+      const result = await MagicHardware.startVoiceSearch();
+      const text = typeof result === 'string' ? result : '';
+      if (text) {
+        setTvTextInput(text);
+        showFeedback(`تم التعرف على: ${text}`);
+        if (activeDevice) {
+          if (
+            activeDevice.transport === 'bluetooth' &&
+            MagicHardware.sendBluetoothHidText
+          ) {
+            await MagicHardware.sendBluetoothHidText(text).catch(() => false);
+          } else {
+            await sendCommandToTv(activeDevice, { type: 'text', text }, 400).catch(
+              () => {},
+            );
+          }
+        }
+      } else {
+        showFeedback('لم يتم التعرف على كلام — حاول مرة أخرى');
+      }
+    } catch {
+      showFeedback('تعذر تشغيل البحث الصوتي');
+    }
+  }, [activeDevice, showFeedback]);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const pointer = await MagicHardware?.isPointerSupported?.().catch(
-        () => false,
+      const [pointer, air, ir, gyro] = await Promise.all([
+        MagicHardware?.isPointerSupported?.().catch(() => false) ?? Promise.resolve(false),
+        MagicHardware?.isAirMouseSupported?.().catch(() => false) ?? Promise.resolve(false),
+        MagicHardware?.hasIrEmitter?.().catch(() => false) ?? Promise.resolve(false),
+        Gyroscope.isAvailableAsync().catch(() => false),
+      ]);
+      if (!mounted) return;
+      setPointerSupported(Boolean(pointer));
+      setAirSupported(Boolean(air && gyro));
+      setIrMissing(!Boolean(ir));
+      setAirStatus(
+        air && gyro ? 'الماوس الهوائي جاهز' : 'الماوس الهوائي غير متاح على هذا الجهاز',
       );
-      if (mounted) setPointerSupported(Boolean(pointer));
     })();
     return () => {
       mounted = false;
@@ -590,6 +709,24 @@ export default function MagicTvRemoteScreen() {
     tvRemote.error,
     pairingModalVisible,
   ]);
+
+  useEffect(() => {
+    if (activeDevice?.transport !== 'bluetooth') return;
+    let mounted = true;
+    const checkHid = async () => {
+      const connected =
+        (await MagicHardware?.isBluetoothHidConnected?.().catch(() => false)) ??
+        false;
+      if (!mounted) return;
+      setConnectionStatus(connected ? 'connected' : 'disconnected');
+    };
+    checkHid();
+    const timer = setInterval(checkHid, 2000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [activeDevice?.transport, activeDevice?.bluetoothMac]);
 
   const handleTouchpadDelta = useCallback(
     (dx: number, dy: number) => {
@@ -628,38 +765,142 @@ export default function MagicTvRemoteScreen() {
     [activeDevice],
   );
 
+  const handleRightClick = useCallback(() => {
+    MagicHardware?.sendMouseClick?.('right').catch(() => {});
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'mouse_click', button: 'right' }, 250).catch(
+        () => {},
+      );
+    }
+    setPointerStatus('نقرة يمنى');
+  }, [activeDevice]);
+
+  const handleDragStart = useCallback(() => {
+    MagicHardware?.startMouseDrag?.('left').catch(() => {});
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'mouse_drag_start' }, 250).catch(() => {});
+    }
+    setPointerStatus('سحب (Drag)');
+  }, [activeDevice]);
+
+  const handleDragEnd = useCallback(() => {
+    MagicHardware?.endMouseDrag?.().catch(() => {});
+    if (activeDevice) {
+      sendCommandToTv(activeDevice, { type: 'mouse_drag_end' }, 250).catch(() => {});
+    }
+  }, [activeDevice]);
+
+  const handleRecenter = useCallback(() => {
+    MagicHardware?.recenterPointer?.().catch(() => {});
+    setPointerStatus('تم توسيط المؤشر');
+  }, []);
+
+  const handleSetMouseMode = useCallback(
+    (mode: 'touchpad' | 'air') => {
+      if (mode === 'air' && !airSupported) {
+        showFeedback('الماوس الهوائي يحتاج مستشعر جيروسكوب في الجهاز');
+        return;
+      }
+      setAirMode(mode === 'air');
+      setAirStatus(mode === 'air' ? 'الماوس الهوائي يعمل' : 'الماوس الهوائي متوقف');
+      showFeedback(mode === 'air' ? 'تم تشغيل الماوس الهوائي' : 'تم إيقاف الماوس الهوائي');
+    },
+    [airSupported, showFeedback],
+  );
+
   const mouseController: RemoteMouseController = useMemo(
     () => ({
-      mode: 'touchpad',
-      setMode: () => {},
+      mode: airMode ? 'air' : 'touchpad',
+      setMode: handleSetMouseMode,
       pointerSupported,
-      airSupported: false,
+      airSupported,
       pointerStatus,
-      airStatus: '',
+      airStatus,
       sensitivity: state.mouseSensitivity,
       setSensitivity: (val) =>
         setState((prev) => ({ ...prev, mouseSensitivity: val })),
       onTouchpadDelta: handleTouchpadDelta,
       onTouchpadPress: handleTouchpadPress,
-      onRightClick: () => {},
-      onRecenter: () => {},
+      onRightClick: handleRightClick,
+      onRecenter: handleRecenter,
       onScroll: handleScroll,
+      onDragStart: handleDragStart,
+      onDragEnd: handleDragEnd,
     }),
     [
+      airMode,
+      handleSetMouseMode,
       pointerSupported,
+      airSupported,
       pointerStatus,
+      airStatus,
       state.mouseSensitivity,
       handleTouchpadDelta,
       handleTouchpadPress,
+      handleRightClick,
+      handleRecenter,
       handleScroll,
+      handleDragStart,
+      handleDragEnd,
     ],
   );
+  useEffect(() => {
+    if (!airMode || !airSupported) return;
+    let mounted = true;
+    Gyroscope.setUpdateInterval(60);
+    const subscription = Gyroscope.addListener(({ x, y }) => {
+      if (!mounted) return;
+      const scale = state.mouseSensitivity * 5;
+      const dx = Math.round(-y * scale);
+      const dy = Math.round(x * scale);
+      if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) {
+        handleTouchpadDelta(dx, dy);
+      }
+    });
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
+  }, [airMode, airSupported, handleTouchpadDelta, state.mouseSensitivity]);
+
   const handleScanNetwork = useCallback(async () => {
     setScanning(true);
     setDiscoveredDevices([]);
-    setScanProgressText('جاري فحص الشبكة المحلية...');
+    setScanProgressText('جاري البحث عبر mDNS وSSDP...');
 
     try {
+      const found: SavedDevice[] = [];
+      const seen = new Set<string>();
+
+      if (MagicHardware?.discoverNetworkDevices) {
+        try {
+          const nativeDevices = await MagicHardware.discoverNetworkDevices();
+          for (const item of nativeDevices ?? []) {
+            if (!isValidIpv4(item.ip) || seen.has(item.ip)) continue;
+            seen.add(item.ip);
+            found.push({
+              id: `discover-${item.ip}-${Date.now()}-${found.length}`,
+              name: item.name?.trim() || `Magic TV (${item.ip})`,
+              ip: item.ip,
+              port: Number(item.port) || 5555,
+              protocol: 'http',
+              transport: 'wifi',
+              source: item.source ?? 'mDNS/SSDP',
+              model: item.source,
+              lastSeen: `اكتشاف ${item.source ?? 'شبكة'}`,
+            });
+          }
+          setDiscoveredDevices([...found]);
+          setScanProgressText(
+            found.length > 0
+              ? `تم العثور على ${found.length} جهاز عبر mDNS/SSDP — نكمل فحص الشبكة...`
+              : 'لم نجد أجهزة عبر mDNS/SSDP — نفحص الشبكة المحلية...',
+          );
+        } catch {
+          setScanProgressText('mDNS/SSDP غير متاح — نفحص الشبكة المحلية...');
+        }
+      }
+
       const ipAddress = await Network.getIpAddressAsync().catch(() => null);
       const prefix = getSubnetPrefix(ipAddress) ?? '192.168.1';
       const candidates: string[] = [];
@@ -675,11 +916,13 @@ export default function MagicTvRemoteScreen() {
         }
       }
 
-      const found: SavedDevice[] = [];
       const batchSize = 18;
 
       for (let i = 0; i < candidates.length; i += batchSize) {
-        const batch = candidates.slice(i, i + batchSize);
+        const batch = candidates
+          .slice(i, i + batchSize)
+          .filter((ip) => !seen.has(ip));
+        if (batch.length === 0) continue;
         setScanProgressText(
           `فحص الشبكة ${prefix}.x (${Math.min(i + batchSize, candidates.length)}/${candidates.length})...`,
         );
@@ -692,7 +935,8 @@ export default function MagicTvRemoteScreen() {
         );
 
         for (const item of results) {
-          if (item.res.reachable) {
+          if (item.res.reachable && !seen.has(item.ip)) {
+            seen.add(item.ip);
             found.push({
               id: `scan-${item.ip}-${Date.now()}-${found.length}`,
               name: item.res.name ?? `Magic TV (${item.ip})`,
@@ -702,6 +946,7 @@ export default function MagicTvRemoteScreen() {
               transport: 'wifi',
               model: item.res.model,
               lastSeen: 'تم العثور عليه',
+              source: 'subnet',
             });
           }
         }
@@ -978,17 +1223,61 @@ export default function MagicTvRemoteScreen() {
             onTabChange={setActiveTab}
             onSendKey={handleSendKey}
             onOpenSettings={() => setSettingsModalVisible(true)}
+            onOpenKeyboard={() => setTextModalVisible(true)}
+            onVoiceSearch={handleVoiceSearch}
             colors={colors}
             isConnected={connectionStatus === 'connected'}
             apps={state.customApps}
             onLaunchApp={handleLaunchApp}
             mouse={mouseController}
           />
-        ) : (
+        ) : screen === 'ac' ? (
           <AcPanel
             colors={colors}
             onSendIr={handleSendAcIr}
-            disabled={!MagicHardware?.transmitIr}
+            disabled={!MagicHardware?.transmitIr || irMissing}
+            irMissing={irMissing}
+          />
+        ) : (
+          <ConnectionPanel
+            colors={colors}
+            devices={state.devices}
+            activeDeviceId={state.activeDeviceId}
+            connectionStatus={connectionStatus}
+            scanning={scanning}
+            scanProgressText={scanProgressText}
+            discoveredDevices={discoveredDevices}
+            btDevices={btDevices}
+            btScanning={btScanning}
+            irMissing={irMissing}
+            pointerSupported={pointerSupported}
+            airSupported={airSupported}
+            hapticsEnabled={state.hapticsEnabled}
+            autoConnect={state.autoConnect}
+            sensitivity={state.mouseSensitivity}
+            onConnect={connectToDevice}
+            onDisconnect={() => {
+              tvRemote.disconnect();
+              if (activeDevice?.transport === 'bluetooth') {
+                MagicHardware?.disconnectBluetoothHid?.().catch(() => {});
+              }
+              setState((prev) => ({ ...prev, activeDeviceId: null }));
+              setConnectionStatus('disconnected');
+              showFeedback('تم فصل الجهاز');
+            }}
+            onRemove={handleRemoveDevice}
+            onScanNetwork={handleScanNetwork}
+            onScanBluetooth={handleScanBluetooth}
+            onOpenManual={() => setDeviceModalVisible(true)}
+            onToggleHaptics={() =>
+              setState((prev) => ({ ...prev, hapticsEnabled: !prev.hapticsEnabled }))
+            }
+            onToggleAutoConnect={() =>
+              setState((prev) => ({ ...prev, autoConnect: !prev.autoConnect }))
+            }
+            onSensitivityChange={(value) =>
+              setState((prev) => ({ ...prev, mouseSensitivity: value }))
+            }
           />
         )}
       </View>
@@ -1041,6 +1330,26 @@ export default function MagicTvRemoteScreen() {
             ]}
           >
             سبلت
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ selected: screen === 'connection' }}
+          onPress={() => setScreen('connection')}
+          style={styles.bottomNavButton}
+        >
+          <Ionicons
+            name="settings-outline"
+            size={19}
+            color={screen === 'connection' ? '#7CE3C3' : colors.secondary}
+          />
+          <Text
+            style={[
+              styles.bottomNavText,
+              { color: screen === 'connection' ? '#7CE3C3' : colors.secondary },
+            ]}
+          >
+            الاتصال
           </Text>
         </Pressable>
       </View>
