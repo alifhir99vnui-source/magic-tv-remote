@@ -2,7 +2,7 @@ const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins'
 const fs = require('fs');
 const path = require('path');
 
-const KT_MODULE = `package com.anonymous.magictvremote
+const KT_MODULE = `package com.magicremote.tvremote
 
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -63,12 +63,17 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
         }
         if (ipAddress.isNotEmpty()) break
       }
-      val wifiMgr = reactContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+
+      val wifiMgr =
+        reactContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+
       @Suppress("DEPRECATION")
       val rawSsid = wifiMgr?.connectionInfo?.ssid ?: ""
+
       val ssid = rawSsid.trim('"').let {
         if (it == "<unknown ssid>" || it.isBlank()) "Wi-Fi Network" else it
       }
+
       val map = Arguments.createMap()
       map.putString("ip", ipAddress)
       map.putString("ssid", ssid)
@@ -81,7 +86,8 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun hasIrEmitter(promise: Promise) {
     try {
-      val ir = reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
+      val ir =
+        reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
       promise.resolve(ir?.hasIrEmitter() == true)
     } catch (e: Exception) {
       promise.resolve(false)
@@ -91,11 +97,14 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun transmitIr(carrierFrequency: Int, pattern: ReadableArray, promise: Promise) {
     try {
-      val ir = reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
+      val ir =
+        reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as? ConsumerIrManager
+
       if (ir == null || !ir.hasIrEmitter()) {
         promise.reject("NO_IR", "No IR emitter on this phone")
         return
       }
+
       val freq = if (carrierFrequency > 0) carrierFrequency else 38000
       val pulses = IntArray(pattern.size()) { i -> pattern.getInt(i) }
       ir.transmit(freq, pulses)
@@ -108,12 +117,16 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun startBluetoothScan(promise: Promise) {
     try {
-      val manager = reactContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-      val adapter: BluetoothAdapter? = manager?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+      val manager =
+        reactContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+      val adapter: BluetoothAdapter? =
+        manager?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+
       if (adapter == null || !adapter.isEnabled) {
         promise.reject("BT_OFF", "Bluetooth is disabled")
         return
       }
+
       adapter.bondedDevices?.forEach { dev ->
         val map = Arguments.createMap()
         map.putString("name", dev.name ?: "Paired Device")
@@ -121,28 +134,42 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
         map.putBoolean("paired", true)
         sendEvent("onBluetoothDeviceFound", map)
       }
+
       if (btReceiver == null) {
         btReceiver = object : BroadcastReceiver() {
           override fun onReceive(context: Context?, intent: Intent?) {
             if (BluetoothDevice.ACTION_FOUND == intent?.action) {
-              val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-              } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-              }
+              val device: BluetoothDevice? =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                  intent.getParcelableExtra(
+                    BluetoothDevice.EXTRA_DEVICE,
+                    BluetoothDevice::class.java
+                  )
+                } else {
+                  @Suppress("DEPRECATION")
+                  intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
+
               if (device != null && !device.address.isNullOrBlank()) {
                 val map = Arguments.createMap()
                 map.putString("name", device.name ?: "Bluetooth Device")
                 map.putString("address", device.address)
-                map.putBoolean("paired", device.bondState == BluetoothDevice.BOND_BONDED)
+                map.putBoolean(
+                  "paired",
+                  device.bondState == BluetoothDevice.BOND_BONDED
+                )
                 sendEvent("onBluetoothDeviceFound", map)
               }
             }
           }
         }
-        reactContext.registerReceiver(btReceiver, IntentFilter(BluetoothDevice.ACTION_FOUND))
+
+        reactContext.registerReceiver(
+          btReceiver,
+          IntentFilter(BluetoothDevice.ACTION_FOUND)
+        )
       }
+
       if (adapter.isDiscovering) adapter.cancelDiscovery()
       adapter.startDiscovery()
       promise.resolve(true)
@@ -157,17 +184,25 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
   fun startGyroscope(promise: Promise) {
     try {
       if (sensorManager == null) {
-        sensorManager = reactContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        sensorManager =
+          reactContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         gyroSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
       }
+
       if (gyroSensor == null) {
         promise.resolve(false)
         return
       }
+
       if (!gyroActive) {
-        sensorManager?.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_GAME)
+        sensorManager?.registerListener(
+          this,
+          gyroSensor,
+          SensorManager.SENSOR_DELAY_GAME
+        )
         gyroActive = true
       }
+
       promise.resolve(true)
     } catch (e: Exception) {
       promise.resolve(false)
@@ -181,7 +216,8 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
         sensorManager?.unregisterListener(this)
         gyroActive = false
       }
-    } catch (_: Exception) {}
+    } catch (_: Exception) {
+    }
   }
 
   @ReactMethod
@@ -191,8 +227,10 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
 
   override fun onSensorChanged(event: SensorEvent?) {
     if (!gyroActive || event == null) return
+
     val dx = (-event.values[1] * 20f).toDouble()
     val dy = (-event.values[0] * 20f).toDouble()
+
     if (Math.abs(dx) > 0.3 || Math.abs(dy) > 0.3) {
       val map = Arguments.createMap()
       map.putDouble("dx", dx)
@@ -201,17 +239,18 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
-  
   @ReactMethod
   fun scanWifiDevices(prefix: String, promise: Promise) {
     Thread {
       val found = Arguments.createArray()
       val cleanPrefix = prefix.trim().trimEnd('.')
       val ports = intArrayOf(5555, 8080, 80, 9000)
+
       for (i in 1..254) {
         val candidate = "$cleanPrefix.$i"
         var reachable = false
         var openPort = 0
+
         for (p in ports) {
           try {
             Socket().use { sock ->
@@ -220,9 +259,12 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
               reachable = true
               openPort = p
             }
+
             if (reachable) break
-          } catch (_: Exception) {}
+          } catch (_: Exception) {
+          }
         }
+
         if (reachable) {
           val item = Arguments.createMap()
           item.putString("name", "Wi-Fi Device ($candidate)")
@@ -231,69 +273,106 @@ class MagicControlModule(private val reactContext: ReactApplicationContext) :
           found.pushMap(item)
         }
       }
+
       promise.resolve(found)
     }.start()
   }
-    @ReactMethod
-    fun getInstalledTvApps(ip: String, promise: Promise) {
-      Thread {
-        val apps = Arguments.createArray()
-        try {
-          Socket().use { sock ->
-            sock.soTimeout = 2500
-            sock.connect(InetSocketAddress(ip.trim(), 5555), 2500)
-            val out = sock.getOutputStream()
-            val cmd = "shell:cmd package query-intent-activities -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER; cmd package query-intent-activities -a android.intent.action.MAIN -c android.intent.category.LAUNCHER\n".toByteArray(Charsets.UTF_8)
-            val lenHex = String.format("%04x", cmd.size).toByteArray(Charsets.UTF_8)
-            out.write("CNXN".toByteArray(Charsets.UTF_8))
-            out.write(ByteArray(20))
-            out.write("WRTE".toByteArray(Charsets.UTF_8))
-            out.write(ByteArray(8))
-            out.write(lenHex)
-            out.write(cmd)
-            out.flush()
-            val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
-            val seen = HashSet<String>()
-            var line: String? = reader.readLine()
-            while (line != null) {
-              val idx = line.indexOf("packageName=")
-              if (idx != -1) {
-                val pkg = line.substring(idx + 12).takeWhile { it != ' ' && it != '\n' && it != '\r' }.trim()
-                if (pkg.isNotEmpty() && !seen.contains(pkg)) {
-                  seen.add(pkg)
-                  val label = pkg.split(".").lastOrNull()?.replaceFirstChar { it.uppercase() } ?: pkg
-                  val item = Arguments.createMap()
-                  item.putString("pkg", pkg)
-                  item.putString("label", label)
-                  apps.pushMap(item)
-                }
+
+  @ReactMethod
+  fun getInstalledTvApps(ip: String, promise: Promise) {
+    Thread {
+      val apps = Arguments.createArray()
+
+      try {
+        Socket().use { sock ->
+          sock.soTimeout = 2500
+          sock.connect(InetSocketAddress(ip.trim(), 5555), 2500)
+
+          val out = sock.getOutputStream()
+          val cmd = (
+            "shell:cmd package query-intent-activities -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER; " +
+            "cmd package query-intent-activities -a android.intent.action.MAIN -c android.intent.category.LAUNCHER\\n"
+          ).toByteArray(Charsets.UTF_8)
+
+          val lenHex =
+            String.format("%04x", cmd.size).toByteArray(Charsets.UTF_8)
+
+          out.write("CNXN".toByteArray(Charsets.UTF_8))
+          out.write(ByteArray(20))
+          out.write("WRTE".toByteArray(Charsets.UTF_8))
+          out.write(ByteArray(8))
+          out.write(lenHex)
+          out.write(cmd)
+          out.flush()
+
+          val reader = BufferedReader(
+            InputStreamReader(sock.getInputStream())
+          )
+          val seen = HashSet<String>()
+          var line: String? = reader.readLine()
+
+          while (line != null) {
+            val idx = line.indexOf("packageName=")
+
+            if (idx != -1) {
+              val pkg = line.substring(idx + 12)
+                .takeWhile { it != ' ' && it != '\\n' && it != '\\r' }
+                .trim()
+
+              if (pkg.isNotEmpty() && !seen.contains(pkg)) {
+                seen.add(pkg)
+
+                val label =
+                  pkg.split(".").lastOrNull()
+                    ?.replaceFirstChar { it.uppercase() } ?: pkg
+
+                val item = Arguments.createMap()
+                item.putString("pkg", pkg)
+                item.putString("label", label)
+                apps.pushMap(item)
               }
-              line = reader.readLine()
             }
+
+            line = reader.readLine()
           }
-        } catch (_: Exception) {}
-        promise.resolve(apps)
-      }.start()
-    }
-  
+        }
+      } catch (_: Exception) {
+      }
+
+      promise.resolve(apps)
+    }.start()
+  }
+
   @ReactMethod
   fun sendIrCode(freq: Int, patternStr: String, promise: Promise) {
     Thread {
       try {
-        val irMgr = reactApplicationContext.getSystemService(android.content.Context.CONSUMER_IR_SERVICE) as? android.hardware.ConsumerIrManager
-        val parts = patternStr.split(",").mapNotNull { it.trim().toIntOrNull() }.toIntArray()
+        val irMgr =
+          reactContext.getSystemService(
+            Context.CONSUMER_IR_SERVICE
+          ) as? ConsumerIrManager
+
+        val parts = patternStr.split(",")
+          .mapNotNull { it.trim().toIntOrNull() }
+          .toIntArray()
+
         if (irMgr != null && irMgr.hasIrEmitter() && parts.isNotEmpty()) {
           irMgr.transmit(freq, parts)
           promise.resolve(true)
-        } else { promise.resolve(false) }
-      } catch (_: Exception) { promise.resolve(false) }
+        } else {
+          promise.resolve(false)
+        }
+      } catch (_: Exception) {
+        promise.resolve(false)
+      }
     }.start()
   }
+
   override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 }
 `;
 
-const KT_PACKAGE = `package com.anonymous.magictvremote
+const KT_PACKAGE = `package com.magicremote.tvremote
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
@@ -313,6 +392,7 @@ module.exports = function withMagicHardware(config) {
   config = withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults.manifest;
     manifest['uses-permission'] = manifest['uses-permission'] || [];
+
     const perms = [
       'android.permission.TRANSMIT_IR',
       'android.permission.BLUETOOTH',
@@ -323,26 +403,47 @@ module.exports = function withMagicHardware(config) {
       'android.permission.ACCESS_COARSE_LOCATION',
       'android.permission.ACCESS_NETWORK_STATE',
       'android.permission.ACCESS_WIFI_STATE',
-      'android.permission.INTERNET'
+      'android.permission.INTERNET',
     ];
+
     perms.forEach((p) => {
-      if (!manifest['uses-permission'].some((item) => item.$?.['android:name'] === p)) {
-        manifest['uses-permission'].push({ $: { 'android:name': p } });
+      if (
+        !manifest['uses-permission'].some(
+          (item) => item.$?.['android:name'] === p
+        )
+      ) {
+        manifest['uses-permission'].push({
+          $: { 'android:name': p },
+        });
       }
     });
+
     return mod;
   });
 
   return withDangerousMod(config, [
     'android',
     async (mod) => {
-      const pkgDir = path.join(mod.modRequest.platformProjectRoot, 'app/src/main/java/com/anonymous/magictvremote');
+      const pkgDir = path.join(
+        mod.modRequest.platformProjectRoot,
+        'app/src/main/java/com/magicremote/tvremote'
+      );
+
       fs.mkdirSync(pkgDir, { recursive: true });
-      fs.writeFileSync(path.join(pkgDir, 'MagicControlModule.kt'), KT_MODULE);
-      fs.writeFileSync(path.join(pkgDir, 'MagicControlPackage.kt'), KT_PACKAGE);
+      fs.writeFileSync(
+        path.join(pkgDir, 'MagicControlModule.kt'),
+        KT_MODULE
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, 'MagicControlPackage.kt'),
+        KT_PACKAGE
+      );
+
       const mainAppPath = path.join(pkgDir, 'MainApplication.kt');
+
       if (fs.existsSync(mainAppPath)) {
         let content = fs.readFileSync(mainAppPath, 'utf8');
+
         if (!content.includes('MagicControlPackage()')) {
           content = content.replace(
             /PackageList\(this\)\.packages\.apply\s*\{/,
@@ -351,7 +452,8 @@ module.exports = function withMagicHardware(config) {
           fs.writeFileSync(mainAppPath, content);
         }
       }
+
       return mod;
-    }
+    },
   ]);
 };
