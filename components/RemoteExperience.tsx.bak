@@ -1,0 +1,527 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  DeviceEventEmitter,
+  Dimensions,
+  NativeModules,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+export interface RemoteExperienceProps {
+  activeTab: 'remote' | 'mouse';
+  onTabChange: (tab: 'remote' | 'mouse') => void;
+  onSendKey: (key: string) => void;
+  colors: any;
+  mouse: {
+    mode: 'touchpad' | 'air';
+    setMode: (mode: 'touchpad' | 'air') => void;
+    pointerSupported: boolean;
+    airSupported: boolean;
+    pointerStatus?: string;
+    airStatus?: string;
+    sensitivity: number;
+    setSensitivity: (val: number) => void;
+    onTouchpadDelta: (dx: number, dy: number) => void;
+    onTouchpadPress: () => void;
+    onRightClick?: () => void;
+    onRecenter?: () => void;
+  };
+}
+
+export function RemoteExperience({
+  activeTab,
+  onTabChange,
+  onSendKey,
+  mouse,
+}: RemoteExperienceProps) {
+  const pagerRef = useRef<ScrollView>(null);
+  const [statusNote, setStatusNote] = useState('Microphone is ready');
+  const gestureRef = useRef({ x: 0, y: 0, moved: false });
+  const volStepRef = useRef(0);
+
+  // مزامنة التمرير الأفقي عند الضغط على زر الماوس أو الرجوع
+  useEffect(() => {
+    pagerRef.current?.scrollTo({
+      x: activeTab === 'mouse' ? SCREEN_WIDTH : 0,
+      animated: true,
+    });
+  }, [activeTab]);
+
+  // الاستماع لأزرار الصوت الفيزيائية في الهاتف
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('onHardwareVolumeKey', (dir: string) => {
+      if (dir === 'up') onSendKey('volumeUp');
+      else if (dir === 'down') onSendKey('volumeDown');
+    });
+    return () => sub.remove();
+  }, [onSendKey]);
+
+  // كبسولة الصوت بالسحب من الأعلى للأسفل وبالعكس
+  const volumePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        volStepRef.current = 0;
+      },
+      onPanResponderMove: (_, gesture) => {
+        const threshold = 24;
+        const steps = Math.trunc(-gesture.dy / threshold);
+        if (steps !== volStepRef.current) {
+          if (steps > volStepRef.current) {
+            onSendKey('volumeUp');
+          } else {
+            onSendKey('volumeDown');
+          }
+          volStepRef.current = steps;
+        }
+      },
+      onPanResponderRelease: (_, gesture) => {
+        if (Math.abs(gesture.dy) < 10) {
+          if (gesture.y0 < 520) onSendKey('volumeUp');
+          else onSendKey('volumeDown');
+        }
+      },
+    })
+  ).current;
+
+  // لوحة الماوس اللمسي
+  const touchpadPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        gestureRef.current = { x: 0, y: 0, moved: false };
+      },
+      onPanResponderMove: (_, gesture) => {
+        const dx = gesture.dx - gestureRef.current.x;
+        const dy = gesture.dy - gestureRef.current.y;
+        if (Math.abs(dx) + Math.abs(dy) > 0) {
+          gestureRef.current.moved = true;
+          mouse.onTouchpadDelta(dx, dy);
+        }
+        gestureRef.current.x = gesture.dx;
+        gestureRef.current.y = gesture.dy;
+      },
+      onPanResponderRelease: () => {
+        if (!gestureRef.current.moved) {
+          mouse.onTouchpadPress();
+        }
+      },
+      onPanResponderTerminate: () => {
+        gestureRef.current = { x: 0, y: 0, moved: false };
+      },
+    })
+  ).current;
+
+  return (
+    <View style={styles.root}>
+      <ScrollView
+        ref={pagerRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onMomentumScrollEnd={(e) => {
+          const page = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+          onTabChange(page === 1 ? 'mouse' : 'remote');
+        }}
+      >
+        {/* الصفحة 1: واجهة الريموت المحدثة */}
+        <View style={[styles.page, { width: SCREEN_WIDTH }]}>
+          <View style={styles.titleRow}>
+            <View>
+              <Text style={styles.kicker}>TV & SATELLITE</Text>
+              <Text style={styles.mainTitle}>Remote</Text>
+            </View>
+            <Pressable
+              onPress={() => onSendKey('power')}
+              style={styles.powerBtn}
+            >
+              <Ionicons name="power" size={22} color="#B94A48" />
+            </Pressable>
+          </View>
+
+          <View style={styles.remoteCard}>
+            {/* الصف العلوي: القائمة - كتم الصوت - معلومات - الإعدادات (بدل التقويم) */}
+            <View style={styles.topIconsRow}>
+              <Pressable onPress={() => onSendKey('menu')} style={styles.roundBtn}>
+                <Ionicons name="reorder-three-outline" size={22} color="#94A3B8" />
+              </Pressable>
+              <Pressable onPress={() => onSendKey('mute')} style={styles.roundBtn}>
+                <Ionicons name="volume-mute-outline" size={20} color="#94A3B8" />
+              </Pressable>
+              <Pressable onPress={() => onSendKey('info')} style={styles.roundBtn}>
+                <Ionicons name="information-circle-outline" size={21} color="#94A3B8" />
+              </Pressable>
+              <Pressable
+                onPress={() => onSendKey('settings')}
+                style={[styles.roundBtn, styles.accentBorder]}
+              >
+                <Ionicons name="settings-outline" size={20} color="#7CE3C3" />
+              </Pressable>
+            </View>
+
+            {/* دائرة الاتجاهات مع OK الأخضر */}
+            <View style={styles.dpadSection}>
+              <Pressable onPress={() => onSendKey('up')} style={styles.dpadBtn}>
+                <Ionicons name="chevron-up" size={24} color="#CBD5E1" />
+              </Pressable>
+              <View style={styles.dpadMidRow}>
+                <Pressable onPress={() => onSendKey('left')} style={styles.dpadBtn}>
+                  <Ionicons name="chevron-back" size={24} color="#CBD5E1" />
+                </Pressable>
+                <Pressable onPress={() => onSendKey('ok')} style={styles.okCircle}>
+                  <Text style={styles.okText}>OK</Text>
+                </Pressable>
+                <Pressable onPress={() => onSendKey('right')} style={styles.dpadBtn}>
+                  <Ionicons name="chevron-forward" size={24} color="#CBD5E1" />
+                </Pressable>
+              </View>
+              <Pressable onPress={() => onSendKey('down')} style={styles.dpadBtn}>
+                <Ionicons name="chevron-down" size={24} color="#CBD5E1" />
+              </Pressable>
+            </View>
+
+            {/* صف: الرجوع يسار + الهوم بالوسط + كبسولة الصوت المدمجة بالسحب يمين */}
+            <View style={styles.navAndVolRow}>
+              <Pressable onPress={() => onSendKey('back')} style={styles.roundBtn}>
+                <Ionicons name="arrow-back" size={21} color="#CBD5E1" />
+              </Pressable>
+
+              <Pressable onPress={() => onSendKey('home')} style={styles.roundBtn}>
+                <Ionicons name="home-outline" size={21} color="#7CE3C3" />
+              </Pressable>
+
+              <View {...volumePanResponder.panHandlers} style={styles.volumeSwipeCapsule}>
+                <Ionicons name="volume-high-outline" size={17} color="#7CE3C3" />
+                <Text style={styles.volSwipeLabel}>VOL</Text>
+                <Ionicons name="volume-low-outline" size={17} color="#94A3B8" />
+              </View>
+            </View>
+
+            {/* لوحة الأرقام مع استبدال Exit بالماوس و OK بالمايك */}
+            <View style={styles.numpadGrid}>
+              {[
+                ['1', '2', '3'],
+                ['4', '5', '6'],
+                ['7', '8', '9'],
+              ].map((row, idx) => (
+                <View key={idx} style={styles.numRow}>
+                  {row.map((num) => (
+                    <Pressable
+                      key={num}
+                      onPress={() => onSendKey(`num${num}`)}
+                      style={styles.numKey}
+                    >
+                      <Text style={styles.numText}>{num}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ))}
+
+              <View style={styles.numRow}>
+                <Pressable
+                  onPress={() => onTabChange('mouse')}
+                  style={[styles.numKey, styles.specialKey]}
+                >
+                  <Ionicons name="navigate-outline" size={17} color="#7CE3C3" />
+                  <Text style={styles.specialKeyText}>Mouse</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => onSendKey('num0')}
+                  style={styles.numKey}
+                >
+                  <Text style={styles.numText}>0</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => onSendKey('voice')}
+                  style={[styles.numKey, styles.specialKey]}
+                >
+                  <Ionicons name="mic-outline" size={17} color="#7CE3C3" />
+                  <Text style={styles.specialKeyText}>Mic</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.pagerDots}>
+            <View style={[styles.dot, styles.dotActive]} />
+            <Pressable onPress={() => onTabChange('mouse')} style={styles.dot} />
+            <Text style={styles.pagerLabel}>Remote</Text>
+          </View>
+        </View>
+
+        {/* الصفحة 2: الماوس والصوت عند السحب لليسار */}
+        <View style={[styles.page, { width: SCREEN_WIDTH }]}>
+          <View style={styles.titleRow}>
+            <View>
+              <Text style={styles.kicker}>POINTER & VOICE</Text>
+              <Text style={styles.mainTitle}>Mouse & Voice</Text>
+            </View>
+            <View style={styles.handCircle}>
+              <Ionicons name="hand-left-outline" size={22} color="#7CE3C3" />
+            </View>
+          </View>
+
+          <View style={styles.modeTabs}>
+            <Pressable
+              onPress={() => mouse.setMode('touchpad')}
+              style={[styles.modeTab, mouse.mode === 'touchpad' && styles.modeTabActive]}
+            >
+              <Text style={[styles.modeTabText, mouse.mode === 'touchpad' && styles.modeTabTextActive]}>
+                Touchpad Mouse
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => mouse.setMode('air')}
+              style={[styles.modeTab, mouse.mode === 'air' && styles.modeTabActive]}
+            >
+              <Text style={[styles.modeTabText, mouse.mode === 'air' && styles.modeTabTextActive]}>
+                Air Mouse
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setStatusNote('Listening for voice command...');
+                onSendKey('voice');
+              }}
+              style={styles.modeTab}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Ionicons name="mic-outline" size={14} color="#94A3B8" />
+                <Text style={styles.modeTabText}>Mic</Text>
+              </View>
+            </Pressable>
+          </View>
+
+          <Text style={styles.helperStatus}>{statusNote}</Text>
+
+          <View {...touchpadPanResponder.panHandlers} style={styles.touchpadBox}>
+            <View style={styles.padIconWrap}>
+              <Ionicons
+                name={mouse.mode === 'air' ? 'phone-portrait-outline' : 'finger-print-outline'}
+                size={32}
+                color="#7CE3C3"
+              />
+            </View>
+            <Text style={styles.padTitle}>
+              {mouse.mode === 'air' ? 'Air Mouse' : 'Fast Touchpad'}
+            </Text>
+            <Text style={styles.padSub}>
+              {mouse.mode === 'air'
+                ? 'Move phone in the air · tap to click'
+                : 'Swipe across this surface · tap to click'}
+            </Text>
+          </View>
+
+          <View style={styles.mouseFooterRow}>
+            <Pressable onPress={() => onTabChange('remote')} style={styles.mouseFooterBtn}>
+              <Ionicons name="arrow-back" size={17} color="#CBD5E1" />
+              <Text style={styles.mouseFooterText}>Back</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => (mouse.onRightClick ? mouse.onRightClick() : onSendKey('back'))}
+              style={styles.mouseFooterBtn}
+            >
+              <Ionicons name="radio-button-on" size={17} color="#94A3B8" />
+              <Text style={styles.mouseFooterText}>Right click</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setStatusNote('Motion baseline recentered.');
+                if (mouse.onRecenter) mouse.onRecenter();
+              }}
+              style={styles.mouseFooterBtn}
+            >
+              <Ionicons name="scan-outline" size={17} color="#7CE3C3" />
+              <Text style={styles.mouseFooterText}>Recenter</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.pagerDots}>
+            <Pressable onPress={() => onTabChange('remote')} style={styles.dot} />
+            <View style={[styles.dot, styles.dotActive]} />
+            <Text style={styles.pagerLabel}>Mouse & Voice</Text>
+          </View>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#0A1012' },
+  page: { flex: 1, paddingHorizontal: 16, justifyContent: 'space-between', paddingBottom: 4 },
+  titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
+  kicker: { color: '#94A3B8', fontSize: 10, fontWeight: '700', letterSpacing: 1.1 },
+  mainTitle: { color: '#F8FAFC', fontSize: 26, fontWeight: '800' },
+  powerBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#25171A',
+    borderWidth: 1,
+    borderColor: '#3E2226',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  remoteCard: {
+    flex: 1,
+    marginVertical: 8,
+    backgroundColor: '#11191C',
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: '#1D2B30',
+    padding: 14,
+    justifyContent: 'space-between',
+  },
+  topIconsRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  roundBtn: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#162125',
+    borderWidth: 1,
+    borderColor: '#223238',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  accentBorder: { borderColor: '#2B594E' },
+  dpadSection: { alignItems: 'center', gap: 6 },
+  dpadMidRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  dpadBtn: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#162125',
+    borderWidth: 1,
+    borderColor: '#223238',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  okCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#3E6B60',
+    borderWidth: 1,
+    borderColor: '#7CE3C3',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  okText: { color: '#0A1012', fontSize: 16, fontWeight: '800' },
+  navAndVolRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  volumeSwipeCapsule: {
+    width: 56,
+    height: 92,
+    borderRadius: 28,
+    backgroundColor: '#162427',
+    borderWidth: 1.2,
+    borderColor: '#3A6B5E',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+  },
+  volSwipeLabel: { color: '#7CE3C3', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
+  numpadGrid: { gap: 8 },
+  numRow: { flexDirection: 'row', gap: 8 },
+  numKey: {
+    flex: 1,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#0E1518',
+    borderWidth: 1,
+    borderColor: '#1E2C31',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  numText: { color: '#E2E8F0', fontSize: 15, fontWeight: '600' },
+  specialKey: {
+    flexDirection: 'row',
+    gap: 5,
+    backgroundColor: '#142326',
+    borderColor: '#2E584E',
+  },
+  specialKeyText: { color: '#7CE3C3', fontSize: 13, fontWeight: '700' },
+  pagerDots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 2 },
+  dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#334155' },
+  dotActive: { backgroundColor: '#7CE3C3' },
+  pagerLabel: { color: '#CBD5E1', fontSize: 12, fontWeight: '600', marginLeft: 4 },
+  handCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#131D20',
+    borderWidth: 1,
+    borderColor: '#1F2E33',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeTabs: {
+    flexDirection: 'row',
+    backgroundColor: '#11191C',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#1D2B30',
+    padding: 4,
+    gap: 4,
+  },
+  modeTab: { flex: 1, paddingVertical: 9, borderRadius: 18, alignItems: 'center' },
+  modeTabActive: { backgroundColor: '#162829', borderWidth: 1, borderColor: '#7CE3C3' },
+  modeTabText: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  modeTabTextActive: { color: '#7CE3C3' },
+  helperStatus: { color: '#94A3B8', fontSize: 12 },
+  touchpadBox: {
+    flex: 1,
+    marginVertical: 8,
+    borderRadius: 24,
+    backgroundColor: '#11191C',
+    borderWidth: 1,
+    borderColor: '#1D2B30',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  padIconWrap: {
+    width: 62,
+    height: 62,
+    borderRadius: 18,
+    backgroundColor: '#162225',
+    borderWidth: 1,
+    borderColor: '#23363B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  padTitle: { color: '#E2E8F0', fontSize: 18, fontWeight: '700' },
+  padSub: { color: '#64748B', fontSize: 12, marginTop: 4 },
+  mouseFooterRow: { flexDirection: 'row', gap: 8 },
+  mouseFooterBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#11191C',
+    borderWidth: 1,
+    borderColor: '#1D2B30',
+    borderRadius: 18,
+    paddingVertical: 12,
+  },
+  mouseFooterText: { color: '#E2E8F0', fontSize: 12, fontWeight: '600' },
+});
+
+export default RemoteExperience;
