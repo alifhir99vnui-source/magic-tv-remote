@@ -7,6 +7,8 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHidDevice;
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings;
 import android.bluetooth.BluetoothProfile;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -17,6 +19,7 @@ import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
+import android.os.PowerManager;
 import android.speech.RecognizerIntent;
 import android.util.Log;
 
@@ -39,9 +42,14 @@ import com.facebook.react.uimanager.ViewManager;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,6 +64,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @ReactModule(name = "MagicControl")
 public class MagicControlModule extends ReactContextBaseJavaModule implements ActivityEventListener {
@@ -77,6 +87,7 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
 
   private Promise voiceSearchPromise;
   private final AtomicInteger mouseButtons = new AtomicInteger(0);
+  private PowerManager.WakeLock wakeLock;
   private static final byte[] HID_DESCRIPTOR = new byte[] {
     (byte) 0x05, (byte) 0x01, (byte) 0x09, (byte) 0x80, (byte) 0xA1, (byte) 0x01, (byte) 0x85, (byte) 0x01,
     (byte) 0x05, (byte) 0x07, (byte) 0x19, (byte) 0xE0, (byte) 0x29, (byte) 0xE7, (byte) 0x15, (byte) 0x00,
@@ -143,6 +154,18 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     IR_KEYS.put("num7", 0x07);
     IR_KEYS.put("num8", 0x08);
     IR_KEYS.put("num9", 0x09);
+    IR_KEYS.put("source", 0x54);
+    IR_KEYS.put("recents", 0x6D);
+    IR_KEYS.put("playPause", 0x35);
+    IR_KEYS.put("rewind", 0x36);
+    IR_KEYS.put("forward", 0x37);
+    IR_KEYS.put("stop", 0x38);
+    IR_KEYS.put("subtitle", 0x39);
+    IR_KEYS.put("audio", 0x3A);
+    IR_KEYS.put("red", 0x26);
+    IR_KEYS.put("green", 0x27);
+    IR_KEYS.put("yellow", 0x28);
+    IR_KEYS.put("blue", 0x29);
 
     HID_KEYS.put("up", 0x52);
     HID_KEYS.put("down", 0x51);
@@ -170,10 +193,16 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     HID_KEYS.put("voice", 0xCA);
     HID_KEYS.put("search", 0xCB);
     HID_KEYS.put("info", 0x40);
-    HID_KEYS.put("red", 0x28);
-    HID_KEYS.put("green", 0x28);
-    HID_KEYS.put("yellow", 0x28);
-    HID_KEYS.put("blue", 0x28);
+    HID_KEYS.put("source", 0xE6);
+    HID_KEYS.put("recents", 0x2F);
+    HID_KEYS.put("rewind", 0xB3);
+    HID_KEYS.put("forward", 0xB4);
+    HID_KEYS.put("subtitle", 0xCD);
+    HID_KEYS.put("audio", 0x188);
+    HID_KEYS.put("red", 0x3A);
+    HID_KEYS.put("green", 0x3B);
+    HID_KEYS.put("yellow", 0x3C);
+    HID_KEYS.put("blue", 0x3D);
     for (int i = 0; i <= 9; i++) {
       HID_KEYS.put("num" + i, 0x1E + i);
     }
@@ -365,6 +394,160 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     } catch (Throwable error) {
       voiceSearchPromise = null;
       promise.resolve(false);
+    }
+  }
+
+  @ReactMethod
+  public void setKeepAwake(boolean enabled, Promise promise) {
+    try {
+      PowerManager manager = (PowerManager) getReactApplicationContext()
+          .getSystemService(Context.POWER_SERVICE);
+      if (manager == null) {
+        promise.resolve(false);
+        return;
+      }
+      if (enabled) {
+        if (wakeLock == null) {
+          wakeLock = manager.newWakeLock(
+              PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE,
+              "MagicRemote:KeepAwake");
+          wakeLock.setReferenceCounted(false);
+        }
+        if (!wakeLock.isHeld()) wakeLock.acquire();
+      } else if (wakeLock != null && wakeLock.isHeld()) {
+        wakeLock.release();
+      }
+      promise.resolve(true);
+    } catch (Throwable error) {
+      promise.resolve(false);
+    }
+  }
+
+  @ReactMethod
+  public void getClipboardText(Promise promise) {
+    try {
+      ClipboardManager clipboard = (ClipboardManager) getReactApplicationContext()
+          .getSystemService(Context.CLIPBOARD_SERVICE);
+      if (clipboard == null || !clipboard.hasPrimaryClip()) {
+        promise.resolve("");
+        return;
+      }
+      ClipData.Item item = clipboard.getPrimaryClip().getItemAt(0);
+      CharSequence text = item == null ? null : item.getText();
+      promise.resolve(text == null ? "" : text.toString());
+    } catch (Throwable error) {
+      promise.resolve("");
+    }
+  }
+
+  @ReactMethod
+  public void getInstalledApps(Promise promise) {
+    executor.execute(() -> promise.resolve(readInstalledPackages(null, 0)));
+  }
+
+  @ReactMethod
+  public void getInstalledTvAppsFromHost(String ip, int port, Promise promise) {
+    executor.execute(() -> {
+      WritableArray fromHttp = readInstalledPackages(ip, port > 0 ? port : 5555);
+      if (fromHttp.size() > 0) {
+        promise.resolve(fromHttp);
+        return;
+      }
+      promise.resolve(readInstalledPackagesFromAdbShell(ip));
+    });
+  }
+
+  private WritableArray readInstalledPackages(String ip, int port) {
+    WritableArray results = new WritableNativeArray();
+    try {
+      Process process;
+      if (ip == null || ip.trim().isEmpty() || ip.equals("0.0.0.0")) {
+        process = Runtime.getRuntime().exec(new String[] {"sh", "-c", "pm list packages -3"});
+      } else {
+        URL url = new URL("http://" + ip + ":" + port + "/api/apps?command=pm%20list%20packages%20-3");
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setConnectTimeout(2500);
+        connection.setReadTimeout(5000);
+        connection.setRequestMethod("GET");
+        int status = connection.getResponseCode();
+        if (status < 200 || status >= 300) return results;
+        process = null;
+        BufferedReader reader = new BufferedReader(
+            new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8));
+        StringBuilder response = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) response.append(line).append('\n');
+        reader.close();
+        connection.disconnect();
+        appendPackages(results, response.toString());
+        return results;
+      }
+      BufferedReader reader = new BufferedReader(
+          new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+      StringBuilder response = new StringBuilder();
+      String line;
+      while ((line = reader.readLine()) != null) response.append(line).append('\n');
+      reader.close();
+      process.waitFor();
+      appendPackages(results, response.toString());
+    } catch (Throwable error) {
+      Log.w(TAG, "installed app list failed", error);
+    }
+    return results;
+  }
+
+  private WritableArray readInstalledPackagesFromAdbShell(String ip) {
+    WritableArray results = new WritableNativeArray();
+    if (ip == null || ip.trim().isEmpty() || ip.equals("0.0.0.0")) return results;
+    Socket socket = null;
+    try {
+      socket = new Socket();
+      socket.connect(new InetSocketAddress(ip, 5555), 2500);
+      socket.setSoTimeout(3000);
+      OutputStream output = socket.getOutputStream();
+      output.write("shell:pm list packages -3\n".getBytes(StandardCharsets.UTF_8));
+      output.flush();
+      BufferedReader reader = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      StringBuilder response = new StringBuilder();
+      String line;
+      long deadline = System.currentTimeMillis() + 4000;
+      while (System.currentTimeMillis() < deadline && (line = reader.readLine()) != null) {
+        response.append(line).append('\n');
+        if (line.trim().isEmpty()) break;
+      }
+      appendPackages(results, response.toString());
+    } catch (Throwable error) {
+      Log.w(TAG, "ADB app list failed", error);
+    } finally {
+      if (socket != null) {
+        try {
+          socket.close();
+        } catch (Throwable ignored) {
+        }
+      }
+    }
+    return results;
+  }
+
+  private static void appendPackages(WritableArray results, String response) {
+    if (response == null) return;
+    Set<String> seen = new HashSet<>();
+    String[] lines = response.split("\\r?\\n");
+    for (String line : lines) {
+      String trimmed = line.trim();
+      if (trimmed.startsWith("package:")) {
+        String pkg = trimmed.substring(8).trim();
+        if (!pkg.isEmpty() && seen.add(pkg)) results.pushString(pkg);
+      }
+    }
+    if (results.size() == 0) {
+      Matcher matcher = Pattern.compile("\"(?:package|packageName)\"\\s*:\\s*\"([A-Za-z0-9_.]+)\"")
+          .matcher(response);
+      while (matcher.find()) {
+        String pkg = matcher.group(1);
+        if (seen.add(pkg)) results.pushString(pkg);
+      }
     }
   }
 

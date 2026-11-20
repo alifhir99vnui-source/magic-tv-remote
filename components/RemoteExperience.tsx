@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { TranslationKey } from '../utils/i18n';
 
 export interface RemoteAppShortcut {
   id: string;
@@ -24,6 +25,8 @@ export interface RemoteExperienceColors {
   text: string;
   secondary: string;
   input: string;
+  accent: string;
+  accentSoft: string;
 }
 
 export interface RemoteMouseController {
@@ -50,7 +53,10 @@ interface RemoteExperienceProps {
   onSendKey: (key: string) => void;
   onOpenSettings?: () => void;
   onOpenKeyboard?: () => void;
+  onOpenApps?: () => void;
+  onQuickPaste?: () => void;
   onVoiceSearch?: () => void;
+  t: (key: TranslationKey) => string;
   colors: RemoteExperienceColors;
   isConnected: boolean;
   apps: RemoteAppShortcut[];
@@ -58,15 +64,16 @@ interface RemoteExperienceProps {
   mouse: RemoteMouseController;
 }
 
-const ACCENT = '#7CE3C3';
-
 export function RemoteExperience({
   activeTab,
   onTabChange,
   onSendKey,
   onOpenSettings,
   onOpenKeyboard,
+  onOpenApps,
+  onQuickPaste,
   onVoiceSearch,
+  t,
   colors,
   apps,
   onLaunchApp,
@@ -76,6 +83,7 @@ export function RemoteExperience({
   const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
   const movedRef = useRef(false);
   const draggingRef = useRef(false);
+  const accent = colors.accent;
 
   const touchpadResponder = useMemo(
     () =>
@@ -94,7 +102,6 @@ export function RemoteExperience({
           if (!lastTouchRef.current) return;
           const dx = evt.nativeEvent.pageX - lastTouchRef.current.x;
           const dy = evt.nativeEvent.pageY - lastTouchRef.current.y;
-
           if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
             if (!movedRef.current) {
               movedRef.current = true;
@@ -109,11 +116,8 @@ export function RemoteExperience({
           }
         },
         onPanResponderRelease: () => {
-          if (draggingRef.current) {
-            mouse.onDragEnd();
-          } else if (!movedRef.current) {
-            mouse.onTouchpadPress();
-          }
+          if (draggingRef.current) mouse.onDragEnd();
+          else if (!movedRef.current) mouse.onTouchpadPress();
           lastTouchRef.current = null;
           movedRef.current = false;
           draggingRef.current = false;
@@ -126,6 +130,30 @@ export function RemoteExperience({
         },
       }),
     [mouse],
+  );
+
+  const roundButton = (
+    key: string,
+    label: TranslationKey,
+    icon: keyof typeof Ionicons.glyphMap,
+    action: () => void,
+    active = false,
+  ) => (
+    <Pressable
+      key={key}
+      accessibilityRole="button"
+      accessibilityLabel={t(label)}
+      onPress={action}
+      style={[
+        styles.circleActionButton,
+        {
+          backgroundColor: active ? colors.accentSoft : colors.card,
+          borderColor: active ? accent : colors.border,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={19} color={active ? accent : colors.text} />
+    </Pressable>
   );
 
   return (
@@ -143,23 +171,23 @@ export function RemoteExperience({
           style={[
             styles.modeButton,
             activeTab === 'remote' && {
-              backgroundColor: colors.cardAlt,
-              borderColor: ACCENT,
+              backgroundColor: colors.accentSoft,
+              borderColor: accent,
             },
           ]}
         >
           <Ionicons
             name="keypad-outline"
             size={16}
-            color={activeTab === 'remote' ? ACCENT : colors.secondary}
+            color={activeTab === 'remote' ? accent : colors.secondary}
           />
           <Text
             style={[
               styles.modeButtonText,
-              { color: activeTab === 'remote' ? ACCENT : colors.secondary },
+              { color: activeTab === 'remote' ? accent : colors.secondary },
             ]}
           >
-            الأزرار
+            {t('buttons')}
           </Text>
         </Pressable>
 
@@ -170,23 +198,23 @@ export function RemoteExperience({
           style={[
             styles.modeButton,
             activeTab === 'mouse' && {
-              backgroundColor: colors.cardAlt,
-              borderColor: ACCENT,
+              backgroundColor: colors.accentSoft,
+              borderColor: accent,
             },
           ]}
         >
           <Ionicons
             name="hand-left-outline"
             size={16}
-            color={activeTab === 'mouse' ? ACCENT : colors.secondary}
+            color={activeTab === 'mouse' ? accent : colors.secondary}
           />
           <Text
             style={[
               styles.modeButtonText,
-              { color: activeTab === 'mouse' ? ACCENT : colors.secondary },
+              { color: activeTab === 'mouse' ? accent : colors.secondary },
             ]}
           >
-            الماوس
+            {t('mouse')}
           </Text>
         </Pressable>
       </View>
@@ -199,100 +227,20 @@ export function RemoteExperience({
           <View style={styles.topActionsRow}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="طاقة"
+              accessibilityLabel={t('power')}
               onPress={() => onSendKey('power')}
               style={[styles.powerButton, { borderColor: '#7F1D1D' }]}
             >
               <Ionicons name="power" size={21} color="#F87171" />
             </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="كتم الصوت"
-              onPress={() => onSendKey('mute')}
-              style={[
-                styles.circleActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons
-                name="volume-mute-outline"
-                size={20}
-                color={colors.text}
-              />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="لوحة المفاتيح"
-              onPress={onOpenKeyboard}
-              style={[
-                styles.circleActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons
-                name="keypad-outline"
-                size={20}
-                color={colors.text}
-              />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="معلومات"
-              onPress={() => onSendKey('info')}
-              style={[
-                styles.circleActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons
-                name="information-circle-outline"
-                size={20}
-                color={colors.text}
-              />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="لوحة الأرقام"
-              onPress={() => setKeypadVisible((v) => !v)}
-              style={[
-                styles.circleActionButton,
-                {
-                  backgroundColor: keypadVisible
-                    ? colors.cardAlt
-                    : colors.card,
-                  borderColor: keypadVisible ? ACCENT : colors.border,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.numpadToggleText,
-                  { color: keypadVisible ? ACCENT : colors.text },
-                ]}
-              >
-                123
-              </Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="الإعدادات"
-              onPress={onOpenSettings}
-              style={[
-                styles.circleActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons
-                name="settings-outline"
-                size={20}
-                color={colors.text}
-              />
-            </Pressable>
+            {roundButton('source', 'source', 'tv-outline', () => onSendKey('source'))}
+            {roundButton('mute', 'mute', 'volume-mute-outline', () => onSendKey('mute'))}
+            {roundButton('keyboard', 'keyboard', 'keypad-outline', () => onOpenKeyboard?.())}
+            {roundButton('paste', 'quickPaste', 'clipboard-outline', () => onQuickPaste?.())}
+            {roundButton('apps', 'apps', 'apps-outline', () => onOpenApps?.())}
+            {roundButton('info', 'info', 'information-circle-outline', () => onSendKey('info'))}
+            {roundButton('numpad', 'numpad', 'grid-outline', () => setKeypadVisible((v) => !v), keypadVisible)}
+            {roundButton('settings', 'settings', 'settings-outline', () => onOpenSettings?.())}
           </View>
 
           {keypadVisible && (
@@ -309,34 +257,21 @@ export function RemoteExperience({
                 ['menu', '0', 'back'],
               ].map((row, rIndex) => (
                 <View key={rIndex} style={styles.numpadRow}>
-                  {row.map((item) => {
-                    const isDigit = /^[0-9]$/.test(item);
-                    const keyName = isDigit ? `num${item}` : item;
-                    return (
-                      <Pressable
-                        key={item}
-                        accessibilityRole="button"
-                        onPress={() => onSendKey(keyName)}
-                        style={[
-                          styles.numpadKey,
-                          {
-                            backgroundColor: colors.input,
-                            borderColor: colors.border,
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[styles.numpadKeyText, { color: colors.text }]}
-                        >
-                          {item === 'menu'
-                            ? 'MENU'
-                            : item === 'back'
-                              ? 'DEL'
-                              : item}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
+                  {row.map((item) => (
+                    <Pressable
+                      key={item}
+                      accessibilityRole="button"
+                      onPress={() => onSendKey(/^[0-9]$/.test(item) ? `num${item}` : item)}
+                      style={[
+                        styles.numpadKey,
+                        { backgroundColor: colors.input, borderColor: colors.border },
+                      ]}
+                    >
+                      <Text style={[styles.numpadKeyText, { color: colors.text }]}>
+                        {item === 'menu' ? 'MENU' : item === 'back' ? 'DEL' : item}
+                      </Text>
+                    </Pressable>
+                  ))}
                 </View>
               ))}
             </View>
@@ -350,49 +285,41 @@ export function RemoteExperience({
           >
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="أعلى"
+              accessibilityLabel={t('up')}
               onPress={() => onSendKey('up')}
               style={styles.dpadTop}
             >
               <Ionicons name="chevron-up" size={26} color={colors.text} />
             </Pressable>
-
             <View style={styles.dpadMiddleRow}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="يسار"
+                accessibilityLabel={t('left')}
                 onPress={() => onSendKey('left')}
                 style={styles.dpadSide}
               >
                 <Ionicons name="chevron-back" size={26} color={colors.text} />
               </Pressable>
-
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="موافق"
+                accessibilityLabel={t('ok')}
                 onPress={() => onSendKey('ok')}
-                style={[styles.okButton, { backgroundColor: ACCENT }]}
+                style={[styles.okButton, { backgroundColor: accent }]}
               >
                 <Text style={styles.okButtonText}>OK</Text>
               </Pressable>
-
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="يمين"
+                accessibilityLabel={t('right')}
                 onPress={() => onSendKey('right')}
                 style={styles.dpadSide}
               >
-                <Ionicons
-                  name="chevron-forward"
-                  size={26}
-                  color={colors.text}
-                />
+                <Ionicons name="chevron-forward" size={26} color={colors.text} />
               </Pressable>
             </View>
-
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="أسفل"
+              accessibilityLabel={t('down')}
               onPress={() => onSendKey('down')}
               style={styles.dpadBottom}
             >
@@ -401,50 +328,32 @@ export function RemoteExperience({
           </View>
 
           <View style={styles.navRow}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="رجوع"
-              onPress={() => onSendKey('back')}
-              style={[
-                styles.navPill,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons name="arrow-back" size={19} color={colors.text} />
-              <Text style={[styles.navPillText, { color: colors.text }]}>
-                رجوع
-              </Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="الرئيسية"
-              onPress={() => onSendKey('home')}
-              style={[
-                styles.navPill,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons name="home-outline" size={19} color={ACCENT} />
-              <Text style={[styles.navPillText, { color: colors.text }]}>
-                الرئيسية
-              </Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="القائمة"
-              onPress={() => onSendKey('menu')}
-              style={[
-                styles.navPill,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Ionicons name="menu-outline" size={19} color={colors.text} />
-              <Text style={[styles.navPillText, { color: colors.text }]}>
-                القائمة
-              </Text>
-            </Pressable>
+            {[
+              ['back', 'back', 'arrow-back-outline'],
+              ['home', 'home', 'home-outline'],
+              ['menu', 'menu', 'menu-outline'],
+              ['recents', 'recentApps', 'albums-outline'],
+            ].map(([key, label, icon]) => (
+              <Pressable
+                key={key}
+                accessibilityRole="button"
+                accessibilityLabel={t(label as TranslationKey)}
+                onPress={() => onSendKey(key)}
+                style={[
+                  styles.navPill,
+                  { backgroundColor: colors.card, borderColor: colors.border },
+                ]}
+              >
+                <Ionicons
+                  name={icon as keyof typeof Ionicons.glyphMap}
+                  size={17}
+                  color={colors.text}
+                />
+                <Text style={[styles.navPillText, { color: colors.text }]}>
+                  {t(label as TranslationKey)}
+                </Text>
+              </Pressable>
+            ))}
           </View>
 
           <View style={styles.rockersRow}>
@@ -456,18 +365,18 @@ export function RemoteExperience({
             >
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="رفع الصوت"
+                accessibilityLabel={t('volumeUp')}
                 onPress={() => onSendKey('volumeUp')}
                 style={styles.rockerHalf}
               >
                 <Ionicons name="add" size={22} color={colors.text} />
               </Pressable>
               <Text style={[styles.rockerLabel, { color: colors.secondary }]}>
-                VOL
+                {t('volume')}
               </Text>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="خفض الصوت"
+                accessibilityLabel={t('volumeDown')}
                 onPress={() => onSendKey('volumeDown')}
                 style={styles.rockerHalf}
               >
@@ -477,15 +386,15 @@ export function RemoteExperience({
 
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="البحث الصوتي"
+              accessibilityLabel={t('voiceSearch')}
               onPress={onVoiceSearch ?? (() => onSendKey('voice'))}
               style={[
                 styles.voiceButton,
-                { backgroundColor: colors.cardAlt, borderColor: ACCENT },
+                { backgroundColor: colors.accentSoft, borderColor: accent },
               ]}
             >
-              <Ionicons name="mic-outline" size={24} color={ACCENT} />
-              <Text style={[styles.voiceLabel, { color: ACCENT }]}>صوت</Text>
+              <Ionicons name="mic-outline" size={24} color={accent} />
+              <Text style={[styles.voiceLabel, { color: accent }]}>{t('voiceSearch')}</Text>
             </Pressable>
 
             <View
@@ -496,18 +405,18 @@ export function RemoteExperience({
             >
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="القناة التالية"
+                accessibilityLabel={t('channelUp')}
                 onPress={() => onSendKey('channelUp')}
                 style={styles.rockerHalf}
               >
                 <Ionicons name="chevron-up" size={22} color={colors.text} />
               </Pressable>
               <Text style={[styles.rockerLabel, { color: colors.secondary }]}>
-                CH
+                {t('channel')}
               </Text>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="القناة السابقة"
+                accessibilityLabel={t('channelDown')}
                 onPress={() => onSendKey('channelDown')}
                 style={styles.rockerHalf}
               >
@@ -516,9 +425,96 @@ export function RemoteExperience({
             </View>
           </View>
 
+          <View style={styles.mediaRow}>
+            {[
+              ['rewind', 'rewind', 'play-skip-back-outline'],
+              ['playPause', 'playPause', 'pause-circle-outline'],
+              ['forward', 'forward', 'play-skip-forward-outline'],
+              ['stop', 'stop', 'stop-circle-outline'],
+              ['source', 'source', 'tv-outline'],
+            ].map(([key, label, icon]) => (
+              <Pressable
+                key={key}
+                accessibilityRole="button"
+                accessibilityLabel={t(label as TranslationKey)}
+                onPress={() => onSendKey(key)}
+                style={[
+                  styles.mediaButton,
+                  { backgroundColor: colors.card, borderColor: colors.border },
+                ]}
+              >
+                <Ionicons
+                  name={icon as keyof typeof Ionicons.glyphMap}
+                  size={18}
+                  color={accent}
+                />
+                <Text style={[styles.mediaButtonText, { color: colors.text }]}>
+                  {t(label as TranslationKey)}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          <View
+            style={[
+              styles.smartCard,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <Text style={[styles.sectionTitle, { color: colors.secondary }]}>
+              {t('smartButtons')}
+            </Text>
+            <View style={styles.smartRow}>
+              {[
+                ['red', 'red', '#F87171'],
+                ['green', 'green', '#34D399'],
+                ['yellow', 'yellow', '#FBBF24'],
+                ['blue', 'blue', '#60A5FA'],
+              ].map(([key, label, color]) => (
+                <Pressable
+                  key={key}
+                  accessibilityRole="button"
+                  accessibilityLabel={t(label as TranslationKey)}
+                  onPress={() => onSendKey(key)}
+                  style={[styles.colorButton, { backgroundColor: color }]}
+                >
+                  <Text style={styles.colorButtonText}>{t(label as TranslationKey)}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <View style={styles.smartRow}>
+              {[
+                ['subtitle', 'subtitle', 'language-outline'],
+                ['audio', 'audio', 'musical-notes-outline'],
+                ['info', 'info', 'information-circle-outline'],
+                ['menu', 'menu', 'options-outline'],
+              ].map(([key, label, icon]) => (
+                <Pressable
+                  key={key}
+                  accessibilityRole="button"
+                  accessibilityLabel={t(label as TranslationKey)}
+                  onPress={() => onSendKey(key)}
+                  style={[
+                    styles.smartPill,
+                    { backgroundColor: colors.cardAlt, borderColor: colors.border },
+                  ]}
+                >
+                  <Ionicons
+                    name={icon as keyof typeof Ionicons.glyphMap}
+                    size={15}
+                    color={accent}
+                  />
+                  <Text style={[styles.smartPillText, { color: colors.text }]}>
+                    {t(label as TranslationKey)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
           <View style={styles.appsSection}>
-            <Text style={[styles.appsTitle, { color: colors.secondary }]}>
-              التطبيقات السريعة (Bluetooth HID)
+            <Text style={[styles.sectionTitle, { color: colors.secondary }]}>
+              {t('favoriteApps')}
             </Text>
             <ScrollView
               horizontal
@@ -532,13 +528,10 @@ export function RemoteExperience({
                   onPress={() => onLaunchApp(app.packageName)}
                   style={[
                     styles.appChip,
-                    {
-                      backgroundColor: colors.card,
-                      borderColor: colors.border,
-                    },
+                    { backgroundColor: colors.card, borderColor: colors.border },
                   ]}
                 >
-                  <Ionicons name={app.icon} size={18} color={ACCENT} />
+                  <Ionicons name={app.icon} size={18} color={accent} />
                   <Text style={[styles.appChipText, { color: colors.text }]}>
                     {app.name}
                   </Text>
@@ -558,21 +551,20 @@ export function RemoteExperience({
                 styles.mouseModePill,
                 {
                   backgroundColor:
-                    mouse.mode === 'touchpad' ? colors.cardAlt : colors.card,
-                  borderColor: mouse.mode === 'touchpad' ? ACCENT : colors.border,
+                    mouse.mode === 'touchpad' ? colors.accentSoft : colors.card,
+                  borderColor: mouse.mode === 'touchpad' ? accent : colors.border,
                 },
               ]}
             >
               <Text
                 style={[
                   styles.mouseModeText,
-                  { color: mouse.mode === 'touchpad' ? ACCENT : colors.text },
+                  { color: mouse.mode === 'touchpad' ? accent : colors.text },
                 ]}
               >
-                لوحة لمس
+                {t('touchpad')}
               </Text>
             </Pressable>
-
             <Pressable
               accessibilityRole="button"
               accessibilityState={{ selected: mouse.mode === 'air' }}
@@ -581,8 +573,8 @@ export function RemoteExperience({
               style={[
                 styles.mouseModePill,
                 {
-                  backgroundColor: mouse.mode === 'air' ? colors.cardAlt : colors.card,
-                  borderColor: mouse.mode === 'air' ? ACCENT : colors.border,
+                  backgroundColor: mouse.mode === 'air' ? colors.accentSoft : colors.card,
+                  borderColor: mouse.mode === 'air' ? accent : colors.border,
                   opacity: mouse.airSupported ? 1 : 0.5,
                 },
               ]}
@@ -590,10 +582,10 @@ export function RemoteExperience({
               <Text
                 style={[
                   styles.mouseModeText,
-                  { color: mouse.mode === 'air' ? ACCENT : colors.text },
+                  { color: mouse.mode === 'air' ? accent : colors.text },
                 ]}
               >
-                {mouse.airSupported ? 'ماوس هوائي' : 'الماوس الهوائي غير متاح'}
+                {mouse.airSupported ? t('airMouse') : t('airUnavailable')}
               </Text>
             </Pressable>
           </View>
@@ -606,59 +598,49 @@ export function RemoteExperience({
             ]}
           >
             <Ionicons
-              name={
-                mouse.mode === 'air'
-                  ? 'navigate-circle-outline'
-                  : 'finger-print-outline'
-              }
+              name={mouse.mode === 'air' ? 'navigate-circle-outline' : 'finger-print-outline'}
               size={34}
-              color={ACCENT}
+              color={accent}
             />
             <Text style={[styles.touchpadStatus, { color: colors.text }]}>
               {mouse.mode === 'air' ? mouse.airStatus : mouse.pointerStatus}
             </Text>
             <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
-              اضغط للنقر · اسحب للسحب (Drag) · استخدم الأزرار أدناه للنقر الأيمن
+              {t('touchpadHint')}
             </Text>
           </View>
 
           <View style={styles.mouseButtonsRow}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={mouse.onTouchpadPress}
-              style={[
-                styles.mouseActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.mouseActionText, { color: colors.text }]}>
-                نقرة يسرى
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={mouse.onRightClick}
-              style={[
-                styles.mouseActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.mouseActionText, { color: colors.text }]}>
-                نقرة يمنى
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={mouse.onRecenter}
-              style={[
-                styles.mouseActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.mouseActionText, { color: ACCENT }]}>
-                توسيط
-              </Text>
-            </Pressable>
+            {[
+              ['leftClick', 'left', mouse.onTouchpadPress],
+              ['rightClick', 'right', mouse.onRightClick],
+              ['recenter', 'center', mouse.onRecenter],
+            ].map(([label, icon, action]) => (
+              <Pressable
+                key={String(label)}
+                accessibilityRole="button"
+                onPress={action as () => void}
+                style={[
+                  styles.mouseActionButton,
+                  { backgroundColor: colors.card, borderColor: colors.border },
+                ]}
+              >
+                <Ionicons
+                  name={
+                    (icon === 'left'
+                      ? 'checkbox-outline'
+                      : icon === 'right'
+                        ? 'square-outline'
+                        : 'locate-outline') as keyof typeof Ionicons.glyphMap
+                  }
+                  size={15}
+                  color={accent}
+                />
+                <Text style={[styles.mouseActionText, { color: colors.text }]}>
+                  {t(label as TranslationKey)}
+                </Text>
+              </Pressable>
+            ))}
           </View>
 
           <View style={styles.scrollControlsRow}>
@@ -672,10 +654,9 @@ export function RemoteExperience({
             >
               <Ionicons name="arrow-up" size={17} color={colors.text} />
               <Text style={[styles.scrollButtonText, { color: colors.text }]}>
-                تمرير لأعلى
+                {t('scrollUp')}
               </Text>
             </Pressable>
-
             <Pressable
               accessibilityRole="button"
               onPress={() => mouse.onScroll(30)}
@@ -686,7 +667,7 @@ export function RemoteExperience({
             >
               <Ionicons name="arrow-down" size={17} color={colors.text} />
               <Text style={[styles.scrollButtonText, { color: colors.text }]}>
-                تمرير لأسفل
+                {t('scrollDown')}
               </Text>
             </Pressable>
           </View>
@@ -697,9 +678,7 @@ export function RemoteExperience({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   modeSwitcher: {
     flexDirection: 'row',
     gap: 6,
@@ -721,53 +700,34 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     borderRadius: 12,
   },
-  modeButtonText: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  scrollContent: {
-    paddingHorizontal: 14,
-    paddingBottom: 16,
-    gap: 12,
-  },
+  modeButtonText: { fontSize: 12, fontWeight: '800' },
+  scrollContent: { paddingHorizontal: 14, paddingBottom: 16, gap: 12 },
   topActionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
   },
   powerButton: {
-    width: 48,
-    height: 48,
+    width: 45,
+    height: 45,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#2A1215',
     borderWidth: 1,
-    borderRadius: 24,
+    borderRadius: 23,
   },
   circleActionButton: {
-    width: 48,
-    height: 48,
+    width: 45,
+    height: 45,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderRadius: 24,
+    borderRadius: 23,
   },
-  numpadToggleText: {
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  numpadCard: {
-    padding: 10,
-    gap: 8,
-    borderWidth: 1,
-    borderRadius: 18,
-  },
-  numpadRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  numpadCard: { padding: 10, gap: 8, borderWidth: 1, borderRadius: 18 },
+  numpadRow: { flexDirection: 'row', gap: 8 },
   numpadKey: {
     flex: 1,
     minHeight: 40,
@@ -776,10 +736,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
   },
-  numpadKeyText: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
+  numpadKeyText: { fontSize: 13, fontWeight: '800' },
   dpadOuter: {
     alignSelf: 'center',
     width: 214,
@@ -790,109 +747,87 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 107,
   },
-  dpadTop: {
-    width: 64,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  dpadTop: { width: 64, height: 44, alignItems: 'center', justifyContent: 'center' },
   dpadMiddleRow: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  dpadSide: {
-    width: 44,
-    height: 64,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  okButton: {
-    width: 74,
-    height: 74,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 37,
-  },
-  okButtonText: {
-    color: '#0A1012',
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  dpadBottom: {
-    width: 64,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  navRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  dpadSide: { width: 44, height: 64, alignItems: 'center', justifyContent: 'center' },
+  okButton: { width: 74, height: 74, alignItems: 'center', justifyContent: 'center', borderRadius: 37 },
+  okButtonText: { color: '#0A1012', fontSize: 16, fontWeight: '900' },
+  dpadBottom: { width: 64, height: 44, alignItems: 'center', justifyContent: 'center' },
+  navRow: { flexDirection: 'row', gap: 6 },
   navPill: {
     flex: 1,
-    minHeight: 44,
-    flexDirection: 'row',
+    minHeight: 42,
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 2,
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: 12,
   },
-  navPillText: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  rockersRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
+  navPillText: { fontSize: 9, fontWeight: '800', textAlign: 'center' },
+  rockersRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   rockerCard: {
     flex: 1,
-    height: 112,
+    height: 108,
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 8,
     borderWidth: 1,
     borderRadius: 22,
   },
-  rockerHalf: {
-    width: '100%',
-    height: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  rockerLabel: {
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1,
-  },
+  rockerHalf: { width: '100%', height: 36, alignItems: 'center', justifyContent: 'center' },
+  rockerLabel: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   voiceButton: {
-    width: 72,
-    height: 72,
+    width: 78,
+    height: 78,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 3,
     borderWidth: 1,
-    borderRadius: 36,
+    borderRadius: 39,
   },
-  voiceLabel: {
-    fontSize: 10,
-    fontWeight: '800',
+  voiceLabel: { fontSize: 9, fontWeight: '800', textAlign: 'center' },
+  mediaRow: { flexDirection: 'row', gap: 6 },
+  mediaButton: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    paddingHorizontal: 2,
+    borderWidth: 1,
+    borderRadius: 12,
   },
-  appsSection: {
-    gap: 6,
+  mediaButtonText: { fontSize: 8, fontWeight: '700', textAlign: 'center' },
+  smartCard: { padding: 12, gap: 10, borderWidth: 1, borderRadius: 18 },
+  sectionTitle: { fontSize: 10, fontWeight: '900' },
+  smartRow: { flexDirection: 'row', gap: 6 },
+  colorButton: {
+    flex: 1,
+    minHeight: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
   },
-  appsTitle: {
-    fontSize: 10,
-    fontWeight: '800',
+  colorButtonText: { color: '#081012', fontSize: 9, fontWeight: '900' },
+  smartPill: {
+    flex: 1,
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    borderWidth: 1,
+    borderRadius: 10,
   },
-  appsRow: {
-    gap: 8,
-  },
+  smartPillText: { fontSize: 8, fontWeight: '700', textAlign: 'center' },
+  appsSection: { gap: 6 },
+  appsRow: { gap: 8 },
   appChip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -902,20 +837,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 14,
   },
-  appChipText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  mouseContainer: {
-    flex: 1,
-    paddingHorizontal: 14,
-    paddingBottom: 12,
-    gap: 10,
-  },
-  mouseModeRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  appChipText: { fontSize: 11, fontWeight: '800' },
+  mouseContainer: { flex: 1, paddingHorizontal: 14, paddingBottom: 12, gap: 10 },
+  mouseModeRow: { flexDirection: 'row', gap: 8 },
   mouseModePill: {
     flex: 1,
     minHeight: 38,
@@ -924,10 +848,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
   },
-  mouseModeText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
+  mouseModeText: { fontSize: 11, fontWeight: '800' },
   touchpadArea: {
     flex: 1,
     alignItems: 'center',
@@ -937,35 +858,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 22,
   },
-  touchpadStatus: {
-    fontSize: 13,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  touchpadHint: {
-    fontSize: 11,
-    textAlign: 'center',
-  },
-  mouseButtonsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  touchpadStatus: { fontSize: 13, fontWeight: '800', textAlign: 'center' },
+  touchpadHint: { fontSize: 11, textAlign: 'center' },
+  mouseButtonsRow: { flexDirection: 'row', gap: 8 },
   mouseActionButton: {
     flex: 1,
-    minHeight: 42,
+    minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 3,
     borderWidth: 1,
     borderRadius: 13,
   },
-  mouseActionText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  scrollControlsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  mouseActionText: { fontSize: 10, fontWeight: '800', textAlign: 'center' },
+  scrollControlsRow: { flexDirection: 'row', gap: 8 },
   scrollButton: {
     flex: 1,
     minHeight: 40,
@@ -976,8 +882,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 13,
   },
-  scrollButtonText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
+  scrollButtonText: { fontSize: 11, fontWeight: '800' },
 });

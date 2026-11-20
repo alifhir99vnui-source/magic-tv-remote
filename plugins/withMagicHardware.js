@@ -14,6 +14,7 @@ const withMagicHardware = (config) => {
       'android.permission.ACCESS_NETWORK_STATE',
       'android.permission.ACCESS_WIFI_STATE',
       'android.permission.CHANGE_WIFI_MULTICAST_STATE',
+      'android.permission.WAKE_LOCK',
     ];
     for (const p of perms) {
       if (!manifest['uses-permission'].some((x) => x.$['android:name'] === p)) {

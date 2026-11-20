@@ -10,11 +10,13 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { RemoteExperienceColors } from './RemoteExperience';
 import { SavedDevice } from '../utils/device';
-
-const ACCENT = '#7CE3C3';
+import { TranslationKey } from '../utils/i18n';
+import { AccentId, AppearanceMode, ACCENT_THEMES, Language } from '../utils/theme';
+import { RoomProfile } from '../utils/room';
 
 interface ConnectionPanelProps {
   colors: RemoteExperienceColors;
+  t: (key: TranslationKey) => string;
   devices: SavedDevice[];
   activeDeviceId: string | null;
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
@@ -28,7 +30,15 @@ interface ConnectionPanelProps {
   airSupported: boolean;
   hapticsEnabled: boolean;
   autoConnect: boolean;
+  keepAwake: boolean;
   sensitivity: number;
+  language: Language;
+  appearance: AppearanceMode;
+  accentId: AccentId;
+  rooms: RoomProfile[];
+  activeRoomId: string | null;
+  tvBrand: string;
+  tvCodeSet: 1 | 2 | 3;
   onConnect: (device: SavedDevice) => void;
   onDisconnect: () => void;
   onRemove: (id: string) => void;
@@ -37,11 +47,21 @@ interface ConnectionPanelProps {
   onOpenManual: () => void;
   onToggleHaptics: () => void;
   onToggleAutoConnect: () => void;
+  onToggleKeepAwake: () => void;
   onSensitivityChange: (value: number) => void;
+  onLanguageChange: (language: Language) => void;
+  onAppearanceChange: (appearance: AppearanceMode) => void;
+  onAccentChange: (accent: AccentId) => void;
+  onSaveRoom: () => void;
+  onActivateRoom: (room: RoomProfile) => void;
+  onDeleteRoom: (id: string) => void;
+  onTvBrandChange: (brand: string) => void;
+  onTvCodeSetChange: (codeSet: 1 | 2 | 3) => void;
 }
 
 export function ConnectionPanel({
   colors,
+  t,
   devices,
   activeDeviceId,
   connectionStatus,
@@ -55,7 +75,15 @@ export function ConnectionPanel({
   airSupported,
   hapticsEnabled,
   autoConnect,
+  keepAwake,
   sensitivity,
+  language,
+  appearance,
+  accentId,
+  rooms,
+  activeRoomId,
+  tvBrand,
+  tvCodeSet,
   onConnect,
   onDisconnect,
   onRemove,
@@ -64,15 +92,25 @@ export function ConnectionPanel({
   onOpenManual,
   onToggleHaptics,
   onToggleAutoConnect,
+  onToggleKeepAwake,
   onSensitivityChange,
+  onLanguageChange,
+  onAppearanceChange,
+  onAccentChange,
+  onSaveRoom,
+  onActivateRoom,
+  onDeleteRoom,
+  onTvBrandChange,
+  onTvCodeSetChange,
 }: ConnectionPanelProps) {
   const active = devices.find((device) => device.id === activeDeviceId) ?? null;
+  const accent = colors.accent;
   const statusLabel =
     connectionStatus === 'connected'
-      ? 'متصل'
+      ? t('connected')
       : connectionStatus === 'connecting'
-        ? 'جاري الاتصال'
-        : 'غير متصل';
+        ? t('connecting')
+        : t('disconnected');
   const statusColor =
     connectionStatus === 'connected'
       ? '#34D399'
@@ -86,10 +124,8 @@ export function ConnectionPanel({
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
     >
-      <Text style={[styles.title, { color: colors.text }]}>الاتصال والإعدادات</Text>
-      <Text style={[styles.subtitle, { color: colors.secondary }]}>
-        اكتشف صندوق Magic A200 Pro تلقائياً أو أضفه يدوياً، وتابع حالة الريموت والمُرسِل IR.
-      </Text>
+      <Text style={[styles.title, { color: colors.text }]}>{t('connectionTitle')}</Text>
+      <Text style={[styles.subtitle, { color: colors.secondary }]}>{t('connectionHelp')}</Text>
 
       <View
         style={[
@@ -101,35 +137,33 @@ export function ConnectionPanel({
           <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
           <View style={styles.statusText}>
             <Text style={[styles.cardTitle, { color: colors.text }]}>
-              {active ? active.name : 'لا يوجد جهاز محدد'}
+              {active ? active.name : t('noDevice')}
             </Text>
             <Text style={[styles.cardHint, { color: colors.secondary }]}>
               {active
                 ? active.transport === 'bluetooth'
-                  ? `Bluetooth HID · ${active.bluetoothMac ?? 'مقترن'}`
+                  ? `Bluetooth HID · ${active.bluetoothMac ?? t('connected')}`
                   : `${active.ip}:${active.port} · ${active.protocol.toUpperCase()}`
-                : `الحالة: ${statusLabel}`}
+                : `${t('connected')}: ${statusLabel}`}
             </Text>
           </View>
           {active ? (
             <Pressable onPress={onDisconnect} style={styles.smallButton}>
-              <Text style={[styles.smallButtonText, { color: '#F87171' }]}>افصل</Text>
+              <Text style={[styles.smallButtonText, { color: '#F87171' }]}>{t('disconnect')}</Text>
             </Pressable>
           ) : null}
         </View>
 
         <View style={styles.hardwareRow}>
-          <HardwareChip label=" IR" ok={!irMissing} />
-          <HardwareChip label=" Mouse" ok={pointerSupported} />
-          <HardwareChip label=" Air" ok={airSupported} />
+          <HardwareChip label="IR" ok={!irMissing} />
+          <HardwareChip label="Mouse" ok={pointerSupported} />
+          <HardwareChip label="Air" ok={airSupported} />
         </View>
 
         {irMissing ? (
           <View style={styles.warningBox}>
             <Ionicons name="warning-outline" size={17} color="#F87171" />
-            <Text style={[styles.warningText, { color: colors.text }]}>
-              جهازك لا يدعم إرسال IR مباشرة. أوامر التكييف تعمل فقط مع صندوق Magic A200 Pro أو هاتف بمُرسِل IR.
-            </Text>
+            <Text style={[styles.warningText, { color: colors.text }]}>{t('irMissing')}</Text>
           </View>
         ) : null}
       </View>
@@ -139,7 +173,7 @@ export function ConnectionPanel({
           accessibilityRole="button"
           disabled={scanning}
           onPress={onScanNetwork}
-          style={[styles.primaryButton, { backgroundColor: ACCENT }]}
+          style={[styles.primaryButton, { backgroundColor: accent }]}
         >
           {scanning ? (
             <ActivityIndicator size="small" color="#081012" />
@@ -147,7 +181,7 @@ export function ConnectionPanel({
             <Ionicons name="wifi-outline" size={18} color="#081012" />
           )}
           <Text style={styles.primaryButtonText}>
-            {scanning ? 'جاري الفحص...' : 'فحص mDNS / SSDP / الشبكة'}
+            {scanning ? t('scanningNetwork') : t('scanNetwork')}
           </Text>
         </Pressable>
         <Pressable
@@ -161,7 +195,7 @@ export function ConnectionPanel({
         >
           <Ionicons name="bluetooth-outline" size={18} color={colors.text} />
           <Text style={[styles.secondaryButtonText, { color: colors.text }]}>
-            أجهزة Bluetooth
+            {t('scanBluetooth')}
           </Text>
         </Pressable>
       </View>
@@ -174,16 +208,12 @@ export function ConnectionPanel({
           { backgroundColor: colors.card, borderColor: colors.border },
         ]}
       >
-        <Ionicons name="add-circle-outline" size={18} color={ACCENT} />
-        <Text style={[styles.secondaryButtonText, { color: ACCENT }]}>
-          إضافة يدوية (IP / Port أو Bluetooth HID)
-        </Text>
+        <Ionicons name="add-circle-outline" size={18} color={accent} />
+        <Text style={[styles.secondaryButtonText, { color: accent }]}>{t('manualAdd')}</Text>
       </Pressable>
 
       {scanProgressText ? (
-        <Text style={[styles.scanStatus, { color: colors.secondary }]}>
-          {scanProgressText}
-        </Text>
+        <Text style={[styles.scanStatus, { color: colors.secondary }]}>{scanProgressText}</Text>
       ) : null}
 
       {discoveredDevices.length > 0 ? (
@@ -194,7 +224,7 @@ export function ConnectionPanel({
           ]}
         >
           <Text style={[styles.cardTitle, { color: colors.text }]}>
-            أجهزة تم اكتشافها ({discoveredDevices.length})
+            {t('discoveredDevices')} ({discoveredDevices.length})
           </Text>
           {discoveredDevices.map((device) => (
             <Pressable
@@ -207,14 +237,12 @@ export function ConnectionPanel({
               ]}
             >
               <View style={styles.deviceText}>
-                <Text style={[styles.deviceName, { color: colors.text }]}>
-                  {device.name}
-                </Text>
+                <Text style={[styles.deviceName, { color: colors.text }]}>{device.name}</Text>
                 <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
                   {device.ip}:{device.port} · {device.source ?? device.protocol.toUpperCase()}
                 </Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={ACCENT} />
+              <Ionicons name="chevron-forward" size={18} color={accent} />
             </Pressable>
           ))}
         </View>
@@ -228,7 +256,7 @@ export function ConnectionPanel({
           ]}
         >
           <Text style={[styles.cardTitle, { color: colors.text }]}>
-            Bluetooth HID ({btDevices.length})
+            {t('scanBluetooth')} ({btDevices.length})
           </Text>
           {btDevices.map((device) => (
             <Pressable
@@ -251,14 +279,12 @@ export function ConnectionPanel({
               ]}
             >
               <View style={styles.deviceText}>
-                <Text style={[styles.deviceName, { color: colors.text }]}>
-                  {device.name}
-                </Text>
+                <Text style={[styles.deviceName, { color: colors.text }]}>{device.name}</Text>
                 <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
                   {device.address}
                 </Text>
               </View>
-              <Text style={styles.connectPill}>ربط HID</Text>
+              <Text style={[styles.connectPill, { color: accent }]}>{t('bindHid')}</Text>
             </Pressable>
           ))}
         </View>
@@ -271,11 +297,11 @@ export function ConnectionPanel({
         ]}
       >
         <Text style={[styles.cardTitle, { color: colors.text }]}>
-          الأجهزة المحفوظة ({devices.length})
+          {t('savedDevices')} ({devices.length})
         </Text>
         {devices.length === 0 ? (
           <Text style={[styles.emptyHint, { color: colors.secondary }]}>
-            لا توجد أجهزة محفوظة. استخدم الفحص أو الإضافة اليدوية.
+            {t('noSavedDevices')}
           </Text>
         ) : (
           devices.map((device) => (
@@ -285,22 +311,17 @@ export function ConnectionPanel({
                 styles.deviceRow,
                 {
                   backgroundColor:
-                    device.id === activeDeviceId ? colors.cardAlt : colors.input,
+                    device.id === activeDeviceId ? colors.accentSoft : colors.input,
                   borderColor:
-                    device.id === activeDeviceId ? ACCENT : colors.border,
+                    device.id === activeDeviceId ? accent : colors.border,
                 },
               ]}
             >
-              <Pressable
-                style={styles.deviceText}
-                onPress={() => onConnect(device)}
-              >
-                <Text style={[styles.deviceName, { color: colors.text }]}>
-                  {device.name}
-                </Text>
+              <Pressable style={styles.deviceText} onPress={() => onConnect(device)}>
+                <Text style={[styles.deviceName, { color: colors.text }]}>{device.name}</Text>
                 <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
                   {device.transport === 'bluetooth'
-                    ? `Bluetooth HID · ${device.bluetoothMac ?? 'مقترن'}`
+                    ? `Bluetooth HID · ${device.bluetoothMac ?? t('connected')}`
                     : `${device.ip}:${device.port} · ${device.protocol.toUpperCase()}`}
                 </Text>
               </Pressable>
@@ -318,21 +339,214 @@ export function ConnectionPanel({
           { backgroundColor: colors.card, borderColor: colors.border },
         ]}
       >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>إعدادات الريموت</Text>
+        <Text style={[styles.cardTitle, { color: colors.text }]}>{t('tvBrands')}</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.brandRow}>
+          {['Nikai', 'LG', 'Samsung', 'Sony', 'TCL', 'Hisense', 'Toshiba', 'AlHafidh', 'Star-X', 'Denka'].map(
+            (brand) => (
+              <Pressable
+                key={brand}
+                accessibilityRole="button"
+                onPress={() => onTvBrandChange(brand)}
+                style={[
+                  styles.brandPill,
+                  {
+                    backgroundColor: tvBrand === brand ? accent : colors.cardAlt,
+                    borderColor: tvBrand === brand ? accent : colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.brandPillText,
+                    { color: tvBrand === brand ? '#081012' : colors.text },
+                  ]}
+                >
+                  {brand}
+                </Text>
+              </Pressable>
+            ),
+          )}
+        </ScrollView>
+        <View style={styles.codeSetRow}>
+          <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('codeSet')}</Text>
+          {[1, 2, 3].map((value) => (
+            <Pressable
+              key={value}
+              accessibilityRole="button"
+              onPress={() => onTvCodeSetChange(value as 1 | 2 | 3)}
+              style={[
+                styles.codePill,
+                {
+                  backgroundColor: tvCodeSet === value ? accent : colors.cardAlt,
+                  borderColor: tvCodeSet === value ? accent : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.codeText,
+                  { color: tvCodeSet === value ? '#081012' : colors.text },
+                ]}
+              >
+                {value}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>{t('rooms')}</Text>
+        {rooms.length === 0 ? (
+          <Text style={[styles.emptyHint, { color: colors.secondary }]}>{t('noRooms')}</Text>
+        ) : (
+          rooms.map((room) => (
+            <View key={room.id} style={styles.deviceRow}>
+              <Pressable
+                style={styles.deviceText}
+                onPress={() => onActivateRoom(room)}
+              >
+                <Text style={[styles.deviceName, { color: colors.text }]}>{room.name}</Text>
+                <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                  {`${room.tvBrand} · CS${room.tvCodeSet} · ${room.acBrand}`}
+                </Text>
+              </Pressable>
+              <Pressable onPress={() => onDeleteRoom(room.id)} hitSlop={8}>
+                <Ionicons name="trash-outline" size={18} color="#F87171" />
+              </Pressable>
+            </View>
+          ))
+        )}
+        <Pressable
+          accessibilityRole="button"
+          onPress={onSaveRoom}
+          style={[styles.primaryButton, { backgroundColor: accent }]}
+        >
+          <Ionicons name="save-outline" size={17} color="#081012" />
+          <Text style={styles.primaryButtonText}>{t('saveRoom')}</Text>
+        </Pressable>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>{t('appearance')}</Text>
+        <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('language')}</Text>
+        <View style={styles.optionRow}>
+          {(['ar', 'en'] as Language[]).map((value) => (
+            <Pressable
+              key={value}
+              accessibilityRole="button"
+              onPress={() => onLanguageChange(value)}
+              style={[
+                styles.optionPill,
+                {
+                  backgroundColor: language === value ? accent : colors.cardAlt,
+                  borderColor: language === value ? accent : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.optionText,
+                  { color: language === value ? '#081012' : colors.text },
+                ]}
+              >
+                {t(value === 'ar' ? 'arabic' : 'english')}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('appearance')}</Text>
+        <View style={styles.optionRow}>
+          {(['system', 'dark', 'light'] as AppearanceMode[]).map((value) => (
+            <Pressable
+              key={value}
+              accessibilityRole="button"
+              onPress={() => onAppearanceChange(value)}
+              style={[
+                styles.optionPill,
+                {
+                  backgroundColor: appearance === value ? accent : colors.cardAlt,
+                  borderColor: appearance === value ? accent : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.optionText,
+                  { color: appearance === value ? '#081012' : colors.text },
+                ]}
+              >
+                {t(value)}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('theme')}</Text>
+        <View style={styles.accentGrid}>
+          {ACCENT_THEMES.map((theme) => (
+            <Pressable
+              key={theme.id}
+              accessibilityRole="button"
+              accessibilityLabel={theme.name[language]}
+              onPress={() => onAccentChange(theme.id)}
+              style={[
+                styles.accentSwatch,
+                {
+                  backgroundColor: theme.value,
+                  borderColor: accentId === theme.id ? colors.text : colors.border,
+                },
+              ]}
+            >
+              {accentId === theme.id ? (
+                <Ionicons name="checkmark" size={14} color="#081012" />
+              ) : null}
+            </Pressable>
+          ))}
+        </View>
+        <Text style={[styles.cardHint, { color: accent }]}>
+          {ACCENT_THEMES.find((theme) => theme.id === accentId)?.name[language]}
+        </Text>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>{t('settings')}</Text>
         <ToggleRow
-          label="الاهتزاز اللمسي"
+          label={t('haptics')}
           value={hapticsEnabled}
           colors={colors}
           onPress={onToggleHaptics}
         />
         <ToggleRow
-          label="الاتصال التلقائي بآخر جهاز"
+          label={t('autoConnect')}
           value={autoConnect}
           colors={colors}
           onPress={onToggleAutoConnect}
         />
+        <ToggleRow
+          label="Keep Awake"
+          value={keepAwake}
+          colors={colors}
+          onPress={onToggleKeepAwake}
+        />
         <Text style={[styles.cardHint, { color: colors.secondary }]}>
-          حساسية المؤشر: {sensitivity.toFixed(2)}x
+          {t('sensitivity')}: {sensitivity.toFixed(2)}x
         </Text>
         <View style={styles.sensitivityRow}>
           {[0.8, 1.35, 1.9, 2.5].map((value) => (
@@ -344,7 +558,7 @@ export function ConnectionPanel({
                 styles.sensitivityPill,
                 {
                   backgroundColor:
-                    Math.abs(sensitivity - value) < 0.08 ? ACCENT : colors.cardAlt,
+                    Math.abs(sensitivity - value) < 0.08 ? accent : colors.cardAlt,
                 },
               ]}
             >
@@ -353,9 +567,7 @@ export function ConnectionPanel({
                   styles.sensitivityText,
                   {
                     color:
-                      Math.abs(sensitivity - value) < 0.08
-                        ? '#081012'
-                        : colors.text,
+                      Math.abs(sensitivity - value) < 0.08 ? '#081012' : colors.text,
                   },
                 ]}
               >
@@ -374,7 +586,11 @@ function HardwareChip({ label, ok }: { label: string; ok: boolean }) {
     <View
       style={[
         styles.hardwareChip,
-        { backgroundColor: ok ? 'rgba(52,211,153,0.16)' : 'rgba(248,113,113,0.16)' },
+        {
+          backgroundColor: ok
+            ? 'rgba(52,211,153,0.16)'
+            : 'rgba(248,113,113,0.16)',
+        },
       ]}
     >
       <Ionicons
@@ -411,7 +627,7 @@ function ToggleRow({
       <View
         style={[
           styles.toggleTrack,
-          { backgroundColor: value ? ACCENT : colors.cardAlt },
+          { backgroundColor: value ? colors.accent : colors.cardAlt },
         ]}
       >
         <View
@@ -495,8 +711,32 @@ const styles = StyleSheet.create({
   deviceText: { flex: 1 },
   deviceName: { fontSize: 12, fontWeight: '800' },
   deviceMeta: { fontSize: 10, marginTop: 2 },
-  connectPill: { color: ACCENT, fontSize: 10, fontWeight: '900' },
+  connectPill: { fontSize: 10, fontWeight: '900' },
   emptyHint: { fontSize: 11, lineHeight: 16 },
+  brandRow: { marginBottom: 4 },
+  brandPill: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    marginRight: 8,
+  },
+  brandPillText: { fontSize: 11, fontWeight: '800' },
+  codeSetRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  codePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, borderWidth: 1 },
+  codeText: { fontSize: 11, fontWeight: '900' },
+  optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  optionPill: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1 },
+  optionText: { fontSize: 11, fontWeight: '800' },
+  accentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  accentSwatch: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -510,12 +750,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 3,
   },
-  toggleThumb: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#FFFFFF',
-  },
+  toggleThumb: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#FFFFFF' },
   sensitivityRow: { flexDirection: 'row', gap: 8 },
   sensitivityPill: {
     flex: 1,

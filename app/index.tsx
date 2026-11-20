@@ -4,9 +4,10 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Appearance,
   AppState,
-  AppStateStatus,
   FlatList,
+  I18nManager,
   Keyboard,
   Modal,
   NativeModules,
@@ -36,9 +37,24 @@ import { ConnectionPanel } from '../components/ConnectionPanel';
 import { SavedDevice } from '../utils/device';
 import {
   AcBrand,
+  AcCodeSet,
   AcState,
   buildAcIrPattern,
+  createDefaultAcState,
 } from '../utils/acIr';
+import { RoomProfile } from '../utils/room';
+import { TranslationKey, translate } from '../utils/i18n';
+import {
+  AccentId,
+  AppearanceMode,
+  Language,
+  getAccent,
+} from '../utils/theme';
+import { TV_BOXES } from '../utils/catalog';
+import {
+  TvBrand,
+  buildTvIrPattern,
+} from '../utils/tvIr';
 import {
   RemoteKeyName,
   useAndroidTvRemote,
@@ -49,7 +65,7 @@ const LEGACY_STORAGE_KEY = '@magic_tv_remote_state_v1';
 
 interface QuickCommand {
   id: string;
-  label: string;
+  label: TranslationKey;
   action: string;
   icon: keyof typeof Ionicons.glyphMap;
 }
@@ -60,6 +76,18 @@ interface RemoteAppState {
   hapticsEnabled: boolean;
   mouseSensitivity: number;
   autoConnect: boolean;
+  keepAwake: boolean;
+  language: Language;
+  appearance: AppearanceMode;
+  accent: AccentId;
+  rooms: RoomProfile[];
+  activeRoomId: string | null;
+  favoritePackages: string[];
+  tvBrand: TvBrand;
+  tvCodeSet: 1 | 2 | 3;
+  acBrand: AcBrand;
+  acCodeSet: AcCodeSet;
+  acState: AcState;
   quickCommands: QuickCommand[];
   customApps: RemoteAppShortcut[];
 }
@@ -76,10 +104,10 @@ const DEFAULT_APPS: RemoteAppShortcut[] = [
 ];
 
 const DEFAULT_QUICK_COMMANDS: QuickCommand[] = [
-  { id: 'q1', label: 'إيقاف مؤقت / تشغيل', action: 'playPause', icon: 'play-skip-forward-outline' },
-  { id: 'q2', label: 'كتم الصوت', action: 'mute', icon: 'volume-mute-outline' },
-  { id: 'q3', label: 'قائمة التطبيقات', action: 'recents', icon: 'apps-outline' },
-  { id: 'q4', label: 'إغلاق الشاشة', action: 'sleep', icon: 'moon-outline' },
+  { id: 'q1', label: 'playPause', action: 'playPause', icon: 'play-skip-forward-outline' },
+  { id: 'q2', label: 'mute', action: 'mute', icon: 'volume-mute-outline' },
+  { id: 'q3', label: 'recentApps', action: 'recents', icon: 'apps-outline' },
+  { id: 'q4', label: 'sleep', action: 'sleep', icon: 'moon-outline' },
 ];
 
 const INITIAL_STATE: RemoteAppState = {
@@ -88,6 +116,18 @@ const INITIAL_STATE: RemoteAppState = {
   hapticsEnabled: true,
   mouseSensitivity: 1.35,
   autoConnect: true,
+  keepAwake: false,
+  language: 'ar',
+  appearance: 'system',
+  accent: 'neonBlue',
+  rooms: [],
+  activeRoomId: null,
+  favoritePackages: DEFAULT_APPS.map((app) => app.packageName),
+  tvBrand: 'Nikai',
+  tvCodeSet: 1,
+  acBrand: 'Tosot',
+  acCodeSet: 1,
+  acState: createDefaultAcState(),
   quickCommands: DEFAULT_QUICK_COMMANDS,
   customApps: DEFAULT_APPS,
 };
@@ -117,6 +157,10 @@ interface MagicHardwareBridge {
   disconnectBluetoothHid?: () => Promise<boolean>;
   startMouseDrag?: (button: 'left' | 'right') => Promise<boolean>;
   endMouseDrag?: () => Promise<boolean>;
+  getClipboardText?: () => Promise<string>;
+  getInstalledApps?: () => Promise<string[]>;
+  getInstalledTvAppsFromHost?: (ip: string, port: number) => Promise<string[]>;
+  setKeepAwake?: (enabled: boolean) => Promise<boolean>;
 }
 
 const MagicHardware: MagicHardwareBridge | undefined =
@@ -264,7 +308,7 @@ async function probeTvHost(
           clearTimeout(timer);
           return {
             reachable: true,
-            name: isMagic ? 'Magic A200 Pro TV' : `جهاز شبكة (${ip})`,
+            name: isMagic ? 'Magic A200 Pro TV' : `Network device (${ip})`,
             model:
               candidatePort === 5555
                 ? `ADB:${candidatePort} (${protocol.toUpperCase()})`
@@ -344,14 +388,25 @@ async function sendCommandToTv(
 
   return {
     ok: false,
-    detail: `تعذر الوصول إلى ${device.ip}:${device.port}`,
+    detail: `Unreachable at ${device.ip}:${device.port}`,
   };
 }
 export default function MagicTvRemoteScreen() {
   const insets = useSafeAreaInsets();
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme !== 'light';
+  const systemColorScheme = useColorScheme();
   const tvRemote = useAndroidTvRemote();
+
+  const [state, setState] = useState<RemoteAppState>(INITIAL_STATE);
+  const [hydrated, setHydrated] = useState(false);
+
+  const isDark =
+    state.appearance === 'dark' ||
+    (state.appearance === 'system' && systemColorScheme !== 'light');
+  const accent = getAccent(state.accent).value;
+  const t = useCallback(
+    (key: TranslationKey) => translate(state.language, key),
+    [state.language],
+  );
 
   const colors = useMemo(
     () =>
@@ -364,6 +419,8 @@ export default function MagicTvRemoteScreen() {
             text: '#F2F7F9',
             secondary: '#8FA2AC',
             input: '#0D1316',
+            accent,
+            accentSoft: `${accent}24`,
           }
         : {
             background: '#F3F6F8',
@@ -373,12 +430,11 @@ export default function MagicTvRemoteScreen() {
             text: '#0F171A',
             secondary: '#5B6D77',
             input: '#F7FAFC',
+            accent,
+            accentSoft: `${accent}1A`,
           },
-    [isDark],
+    [isDark, accent],
   );
-
-  const [state, setState] = useState<RemoteAppState>(INITIAL_STATE);
-  const [hydrated, setHydrated] = useState(false);
 
   const [screen, setScreen] = useState<'remote' | 'ac' | 'connection'>('remote');
   const [activeTab, setActiveTab] = useState<'remote' | 'mouse'>('remote');
@@ -386,13 +442,13 @@ export default function MagicTvRemoteScreen() {
   const [connectionStatus, setConnectionStatus] = useState<
     'disconnected' | 'connecting' | 'connected'
   >('disconnected');
-  const [lastFeedback, setLastFeedback] = useState<string>('جاهز للاتصال بـ Magic A200 Pro');
+  const [lastFeedback, setLastFeedback] = useState<string>(t('ready'));
   const [lastActionBadge, setLastActionBadge] = useState<string | null>(null);
 
   const [pointerSupported, setPointerSupported] = useState(true);
   const [airSupported, setAirSupported] = useState(false);
-  const [pointerStatus, setPointerStatus] = useState('لوحة اللمس جاهزة');
-  const [airStatus, setAirStatus] = useState('الماوس الهوائي متوقف');
+  const [pointerStatus, setPointerStatus] = useState(t('touchpad'));
+  const [airStatus, setAirStatus] = useState(t('airOff'));
   const [irMissing, setIrMissing] = useState(true);
 
   const [deviceModalVisible, setDeviceModalVisible] = useState(false);
@@ -423,6 +479,8 @@ export default function MagicTvRemoteScreen() {
 
   const [newAppName, setNewAppName] = useState('');
   const [newAppPackage, setNewAppPackage] = useState('');
+  const [installedApps, setInstalledApps] = useState<RemoteAppShortcut[]>([]);
+  const [fetchingApps, setFetchingApps] = useState(false);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -432,6 +490,11 @@ export default function MagicTvRemoteScreen() {
     if (feedbackTimerRef.current) clearTimeout(feedbackTimerRef.current);
     feedbackTimerRef.current = setTimeout(() => setFeedback(''), 2500);
   }, []);
+  const tap = useCallback(() => {
+    if (state.hapticsEnabled) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+  }, [state.hapticsEnabled]);
   const activeDevice = useMemo(
     () => state.devices.find((d) => d.id === state.activeDeviceId) ?? null,
     [state.devices, state.activeDeviceId],
@@ -456,6 +519,13 @@ export default function MagicTvRemoteScreen() {
             customApps: Array.isArray(parsed.customApps)
               ? parsed.customApps
               : prev.customApps,
+            rooms: Array.isArray(parsed.rooms) ? parsed.rooms : prev.rooms,
+            favoritePackages: Array.isArray(parsed.favoritePackages)
+              ? parsed.favoritePackages
+              : prev.favoritePackages,
+            acState: parsed.acState
+              ? { ...prev.acState, ...parsed.acState }
+              : prev.acState,
           }));
         }
       } catch {
@@ -472,6 +542,31 @@ export default function MagicTvRemoteScreen() {
     if (!hydrated) return;
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
   }, [hydrated, state]);
+
+  useEffect(() => {
+    I18nManager.allowRTL(true);
+    I18nManager.forceRTL(state.language === 'ar');
+  }, [state.language]);
+
+  useEffect(() => {
+    Appearance.setColorScheme(
+      state.appearance === 'system' ? 'auto' : state.appearance,
+    );
+  }, [state.appearance]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    MagicHardware?.setKeepAwake?.(state.keepAwake).catch(() => {});
+  }, [hydrated, state.keepAwake]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && state.keepAwake) {
+        MagicHardware?.setKeepAwake?.(true).catch(() => {});
+      }
+    });
+    return () => subscription.remove();
+  }, [state.keepAwake]);
 
   const requestBluetoothPermissions = useCallback(async () => {
     if (Platform.OS !== 'android') return false;
@@ -497,7 +592,7 @@ export default function MagicTvRemoteScreen() {
         const allowed = await requestBluetoothPermissions();
         if (!allowed) {
           setConnectionStatus('disconnected');
-          showFeedback('صلاحيات البلوتوث مطلوبة لربط الريموت');
+          showFeedback(`${t('bluetoothPermissionsHelp')}`);
           return;
         }
         if (dev.bluetoothMac && MagicHardware?.pairOrConnectBluetoothHid) {
@@ -507,14 +602,14 @@ export default function MagicTvRemoteScreen() {
               dev.bluetoothMac,
             );
             setConnectionStatus(paired ? 'connected' : 'disconnected');
-            showFeedback(paired ? `متصل بـ ${dev.name}` : 'تعذر ربط جهاز Bluetooth HID');
+            showFeedback(paired ? `${t('connected')} · ${dev.name}` : t('appsFetchFailed'));
           } catch {
             setConnectionStatus('disconnected');
-            showFeedback('تعذر ربط جهاز Bluetooth HID');
+            showFeedback(t('appsFetchFailed'));
           }
         } else {
           setConnectionStatus('disconnected');
-          showFeedback('اقتران Bluetooth HID غير متاح في هذا البناء');
+          showFeedback(t('bluetoothPermissionsHelp'));
         }
         return;
       }
@@ -522,11 +617,9 @@ export default function MagicTvRemoteScreen() {
       setConnectionStatus('connecting');
       const ok = await tvRemote.connect(dev.ip);
       setConnectionStatus(ok ? 'connecting' : 'disconnected');
-      showFeedback(
-        ok ? 'جاري الاتصال... انتظر رمز الاقتران إن ظهر' : tvRemote.error,
-      );
+      showFeedback(ok ? t('connecting') : tvRemote.error);
     },
-    [requestBluetoothPermissions, showFeedback, tvRemote.connect],
+    [requestBluetoothPermissions, showFeedback, t, tvRemote.connect],
   );
 
   useEffect(() => {
@@ -538,22 +631,29 @@ export default function MagicTvRemoteScreen() {
 
   const handleSendKey = useCallback(
     (key: string) => {
+      tap();
       if (activeDevice?.transport === 'wifi' && tvRemote.isConnected) {
         const keyName = ANDROID_TV_KEY_MAP[key];
-        if (key === 'power') {
-          tvRemote.sendPower();
-        } else if (keyName) {
-          tvRemote.sendKey(keyName);
-        }
+        if (key === 'power') tvRemote.sendPower();
+        else if (keyName) tvRemote.sendKey(keyName);
         return;
       }
       if (activeDevice) {
         sendCommandToTv(activeDevice, { type: 'key', key }, 200).catch(() => {});
-      } else if (MagicHardware?.sendIrKey) {
-        MagicHardware.sendIrKey(key).catch(() => {});
+        return;
       }
+      const ir = buildTvIrPattern(state.tvBrand, state.tvCodeSet, key);
+      MagicHardware?.transmitIr?.(ir.carrierFrequency, ir.pattern).catch(() => {});
     },
-    [activeDevice, tvRemote.isConnected, tvRemote.sendKey, tvRemote.sendPower],
+    [
+      activeDevice,
+      state.tvBrand,
+      state.tvCodeSet,
+      tap,
+      tvRemote.isConnected,
+      tvRemote.sendKey,
+      tvRemote.sendPower,
+    ],
   );
 
   const handleLaunchApp = useCallback(
@@ -562,7 +662,7 @@ export default function MagicTvRemoteScreen() {
         try {
           const launched = await MagicHardware.launchTvApp(pkg);
           if (launched) {
-            showFeedback(`تم فتح ${pkg}`);
+            showFeedback(`${t('appLaunched')}: ${pkg}`);
             return;
           }
         } catch {
@@ -577,34 +677,31 @@ export default function MagicTvRemoteScreen() {
         ).catch(() => {});
       }
     },
-    [activeDevice, showFeedback],
+    [activeDevice, showFeedback, t],
   );
 
   const handleSendAcIr = useCallback(
-    async (brand: AcBrand, acState: AcState) => {
+    async (brand: AcBrand, acState: AcState, codeSet: AcCodeSet = 1) => {
+      tap();
       if (!MagicHardware?.transmitIr || irMissing) {
-        showFeedback('مُرسِل IR غير متاح على هذا الجهاز — استخدم صندوق Magic A200 Pro');
+        showFeedback(t('irMissingShort'));
         return;
       }
-      const { carrierFrequency, pattern } = buildAcIrPattern(brand, acState);
+      const { carrierFrequency, pattern } = buildAcIrPattern(brand, acState, codeSet);
       try {
         const sent = await MagicHardware.transmitIr(carrierFrequency, pattern);
-        showFeedback(
-          sent
-            ? `تم إرسال إعدادات ${brand} عبر IR`
-            : 'تعذر إرسال أمر IR — تحقق من مُرسِل IR',
-        );
+        showFeedback(sent ? t('irSent') : t('irFailed'));
       } catch {
-        showFeedback('تعذر إرسال أمر IR — تحقق من مُرسِل IR');
+        showFeedback(t('irFailed'));
       }
     },
-    [irMissing, showFeedback],
+    [irMissing, showFeedback, t, tap],
   );
 
   const handleSendTvText = useCallback(async () => {
     const text = tvTextInput.trim();
     if (!text) {
-      showFeedback('اكتب النص أولاً');
+      showFeedback(t('textPlaceholder'));
       return;
     }
 
@@ -626,19 +723,17 @@ export default function MagicTvRemoteScreen() {
       sent = result.ok;
     }
     setSendingText(false);
-    showFeedback(
-      sent ? `تم إرسال النص: ${text}` : 'تعذر إرسال النص — تحقق من الاتصال',
-    );
+    showFeedback(sent ? `${t('textSent')}: ${text}` : t('textFailed'));
     if (sent) {
       setTvTextInput('');
       Keyboard.dismiss();
       setTextModalVisible(false);
     }
-  }, [activeDevice, showFeedback, tvTextInput]);
+  }, [activeDevice, showFeedback, t, tvTextInput]);
 
   const handleVoiceSearch = useCallback(async () => {
     if (!MagicHardware?.startVoiceSearch) {
-      showFeedback('البحث الصوتي الأصلي غير متاح في هذا البناء');
+      showFeedback(t('voiceUnavailable'));
       return;
     }
     try {
@@ -646,7 +741,7 @@ export default function MagicTvRemoteScreen() {
       const text = typeof result === 'string' ? result : '';
       if (text) {
         setTvTextInput(text);
-        showFeedback(`تم التعرف على: ${text}`);
+        showFeedback(`${t('voiceRecognized')}: ${text}`);
         if (activeDevice) {
           if (
             activeDevice.transport === 'bluetooth' &&
@@ -660,12 +755,12 @@ export default function MagicTvRemoteScreen() {
           }
         }
       } else {
-        showFeedback('لم يتم التعرف على كلام — حاول مرة أخرى');
+        showFeedback(t('voiceNoResult'));
       }
     } catch {
-      showFeedback('تعذر تشغيل البحث الصوتي');
+      showFeedback(t('voiceUnavailable'));
     }
-  }, [activeDevice, showFeedback]);
+  }, [activeDevice, showFeedback, t]);
 
   useEffect(() => {
     let mounted = true;
@@ -680,14 +775,12 @@ export default function MagicTvRemoteScreen() {
       setPointerSupported(Boolean(pointer));
       setAirSupported(Boolean(air && gyro));
       setIrMissing(!Boolean(ir));
-      setAirStatus(
-        air && gyro ? 'الماوس الهوائي جاهز' : 'الماوس الهوائي غير متاح على هذا الجهاز',
-      );
+      setAirStatus(air && gyro ? t('airMouse') : t('airUnavailable'));
     })();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (activeDevice?.transport !== 'wifi') return;
@@ -732,7 +825,7 @@ export default function MagicTvRemoteScreen() {
     (dx: number, dy: number) => {
       const scaledX = Math.round(dx * state.mouseSensitivity);
       const scaledY = Math.round(dy * state.mouseSensitivity);
-      setPointerStatus(`Pointer (${scaledX}, ${scaledY})`);
+      setPointerStatus(`${t('mouse')} (${scaledX}, ${scaledY})`);
       if (MagicHardware?.sendMouseMove) {
         MagicHardware.sendMouseMove(scaledX, scaledY).catch(() => {});
       }
@@ -740,18 +833,19 @@ export default function MagicTvRemoteScreen() {
         sendCommandToTv(activeDevice, { type: 'mouse_move', dx: scaledX, dy: scaledY }, 250).catch(() => {});
       }
     },
-    [state.mouseSensitivity, activeDevice],
+    [state.mouseSensitivity, activeDevice, t],
   );
 
   const handleTouchpadPress = useCallback(() => {
-    setPointerStatus('Click');
+    tap();
+    setPointerStatus(t('leftClick'));
     if (MagicHardware?.sendMouseClick) {
       MagicHardware.sendMouseClick('left').catch(() => {});
     }
     if (activeDevice) {
       sendCommandToTv(activeDevice, { type: 'mouse_click', button: 'left' }, 250).catch(() => {});
     }
-  }, [activeDevice]);
+  }, [activeDevice, t, tap]);
 
   const handleScroll = useCallback(
     (deltaY: number) => {
@@ -766,22 +860,24 @@ export default function MagicTvRemoteScreen() {
   );
 
   const handleRightClick = useCallback(() => {
+    tap();
     MagicHardware?.sendMouseClick?.('right').catch(() => {});
     if (activeDevice) {
       sendCommandToTv(activeDevice, { type: 'mouse_click', button: 'right' }, 250).catch(
         () => {},
       );
     }
-    setPointerStatus('نقرة يمنى');
-  }, [activeDevice]);
+    setPointerStatus(t('rightClick'));
+  }, [activeDevice, t, tap]);
 
   const handleDragStart = useCallback(() => {
+    tap();
     MagicHardware?.startMouseDrag?.('left').catch(() => {});
     if (activeDevice) {
       sendCommandToTv(activeDevice, { type: 'mouse_drag_start' }, 250).catch(() => {});
     }
-    setPointerStatus('سحب (Drag)');
-  }, [activeDevice]);
+    setPointerStatus(t('touchpadHint'));
+  }, [activeDevice, t, tap]);
 
   const handleDragEnd = useCallback(() => {
     MagicHardware?.endMouseDrag?.().catch(() => {});
@@ -792,20 +888,22 @@ export default function MagicTvRemoteScreen() {
 
   const handleRecenter = useCallback(() => {
     MagicHardware?.recenterPointer?.().catch(() => {});
-    setPointerStatus('تم توسيط المؤشر');
-  }, []);
+    setPointerStatus(t('recenter'));
+    tap();
+  }, [t, tap]);
 
   const handleSetMouseMode = useCallback(
     (mode: 'touchpad' | 'air') => {
       if (mode === 'air' && !airSupported) {
-        showFeedback('الماوس الهوائي يحتاج مستشعر جيروسكوب في الجهاز');
+        showFeedback(t('airUnavailable'));
         return;
       }
+      tap();
       setAirMode(mode === 'air');
-      setAirStatus(mode === 'air' ? 'الماوس الهوائي يعمل' : 'الماوس الهوائي متوقف');
-      showFeedback(mode === 'air' ? 'تم تشغيل الماوس الهوائي' : 'تم إيقاف الماوس الهوائي');
+      setAirStatus(mode === 'air' ? t('airMouse') : t('airOff'));
+      showFeedback(mode === 'air' ? t('airOn') : t('airOff'));
     },
-    [airSupported, showFeedback],
+    [airSupported, showFeedback, t, tap],
   );
 
   const mouseController: RemoteMouseController = useMemo(
@@ -866,7 +964,7 @@ export default function MagicTvRemoteScreen() {
   const handleScanNetwork = useCallback(async () => {
     setScanning(true);
     setDiscoveredDevices([]);
-    setScanProgressText('جاري البحث عبر mDNS وSSDP...');
+    setScanProgressText(t('scanningNetwork'));
 
     try {
       const found: SavedDevice[] = [];
@@ -887,17 +985,17 @@ export default function MagicTvRemoteScreen() {
               transport: 'wifi',
               source: item.source ?? 'mDNS/SSDP',
               model: item.source,
-              lastSeen: `اكتشاف ${item.source ?? 'شبكة'}`,
+              lastSeen: `${t('discoveredVia')} ${item.source ?? t('networkSource')}`,
             });
           }
           setDiscoveredDevices([...found]);
           setScanProgressText(
             found.length > 0
-              ? `تم العثور على ${found.length} جهاز عبر mDNS/SSDP — نكمل فحص الشبكة...`
-              : 'لم نجد أجهزة عبر mDNS/SSDP — نفحص الشبكة المحلية...',
+              ? `${t('foundDevices')}: ${found.length} · mDNS/SSDP`
+              : t('scanningNetwork'),
           );
         } catch {
-          setScanProgressText('mDNS/SSDP غير متاح — نفحص الشبكة المحلية...');
+          setScanProgressText(t('scanningNetwork'));
         }
       }
 
@@ -924,7 +1022,7 @@ export default function MagicTvRemoteScreen() {
           .filter((ip) => !seen.has(ip));
         if (batch.length === 0) continue;
         setScanProgressText(
-          `فحص الشبكة ${prefix}.x (${Math.min(i + batchSize, candidates.length)}/${candidates.length})...`,
+          `${t('scanningSubnet')} ${prefix}.x (${Math.min(i + batchSize, candidates.length)}/${candidates.length})...`,
         );
 
         const results = await Promise.all(
@@ -945,7 +1043,7 @@ export default function MagicTvRemoteScreen() {
               protocol: 'adb',
               transport: 'wifi',
               model: item.res.model,
-              lastSeen: 'تم العثور عليه',
+              lastSeen: t('found'),
               source: 'subnet',
             });
           }
@@ -955,22 +1053,22 @@ export default function MagicTvRemoteScreen() {
       setDiscoveredDevices(found);
       setScanProgressText(
         found.length > 0
-          ? `تم العثور على ${found.length} جهاز في الشبكة`
-          : `لم يتم العثور على أجهزة تلقائياً في ${prefix}.x — يمكنك إضافته يدوياً بالـ IP`,
+          ? `${t('foundDevices')}: ${found.length}`
+          : t('noDevicesOnSubnet'),
       );
     } catch {
-      setScanProgressText('تعذر فحص الشبكة — تحقق من اتصال Wi-Fi');
+      setScanProgressText(t('scanFailed'));
     } finally {
       setScanning(false);
     }
-  }, []);
+  }, [t]);
 
   const handleScanBluetooth = useCallback(async () => {
     setBtScanning(true);
     try {
       const allowed = await requestBluetoothPermissions();
       if (!allowed) {
-        Alert.alert('صلاحيات البلوتوث', 'لازم تسمح بالبحث والاتصال بجهاز Bluetooth HID.');
+        Alert.alert(t('bluetoothPermissions'), t('bluetoothPermissionsHelp'));
         return;
       }
       if (MagicHardware?.scanBluetoothDevices) {
@@ -986,20 +1084,20 @@ export default function MagicTvRemoteScreen() {
         setBtDevices([]);
         Alert.alert(
           'Bluetooth HID',
-          'ماسح البلوتوث الأصلي متوفر داخل بناء Native APK المفعّل بـ withMagicHardware.',
+          t('btScannerUnavailable'),
         );
       }
     } finally {
       setBtScanning(false);
     }
-  }, [requestBluetoothPermissions]);
+  }, [requestBluetoothPermissions, t]);
 
   const handleSaveManualDevice = useCallback(() => {
     const cleanIp = manualIp.trim();
     const parsedPort = Number(manualPort.trim()) || 5555;
 
     if (manualTransport === 'wifi' && !isValidIpv4(cleanIp)) {
-      Alert.alert('عنوان IP غير صحيح', 'يرجى إدخال عنوان IP صحيح مثل 192.168.1.120');
+      Alert.alert(t('invalidIp'), t('invalidIpHelp'));
       return;
     }
 
@@ -1011,7 +1109,7 @@ export default function MagicTvRemoteScreen() {
       protocol: manualProtocol,
       transport: manualTransport,
       bluetoothMac: manualTransport === 'bluetooth' ? manualBtMac.trim() : undefined,
-      lastSeen: 'مضاف حديثاً',
+      lastSeen: t('addedRecently'),
     };
 
     setState((prev) => ({
@@ -1030,6 +1128,7 @@ export default function MagicTvRemoteScreen() {
     manualTransport,
     manualBtMac,
     connectToDevice,
+    t,
   ]);
 
   const handleAddDiscoveredDevice = useCallback(
@@ -1074,7 +1173,7 @@ export default function MagicTvRemoteScreen() {
     const title = newAppName.trim();
     const pkg = newAppPackage.trim();
     if (!title || !pkg) {
-      Alert.alert('نقص في البيانات', 'أدخل اسم التطبيق واسم الحزمة (Package Name)');
+      Alert.alert(t('addApp'), t('appsHelp'));
       return;
     }
 
@@ -1092,7 +1191,111 @@ export default function MagicTvRemoteScreen() {
     setNewAppName('');
     setNewAppPackage('');
     setAddAppModalVisible(false);
-  }, [newAppName, newAppPackage]);
+  }, [newAppName, newAppPackage, t]);
+
+  const handleFetchInstalledApps = useCallback(async () => {
+    setFetchingApps(true);
+    try {
+      let packages: string[] = [];
+      if (
+        activeDevice?.transport === 'wifi' &&
+        MagicHardware?.getInstalledTvAppsFromHost
+      ) {
+        packages = await MagicHardware.getInstalledTvAppsFromHost(
+          activeDevice.ip,
+          activeDevice.port || 5555,
+        ).catch(() => []);
+      }
+      if (packages.length === 0 && MagicHardware?.getInstalledApps) {
+        packages = await MagicHardware.getInstalledApps().catch(() => []);
+      }
+      const apps = packages
+        .filter(Boolean)
+        .map((pkg, index) => ({
+          id: `installed-${pkg}-${index}`,
+          name: pkg.split('.').pop() ?? pkg,
+          packageName: pkg,
+          icon: 'apps-outline' as const,
+        }));
+      setInstalledApps(apps);
+      setAppsModalVisible(true);
+      if (apps.length === 0) showFeedback(t('appsFetchFailed'));
+    } catch {
+      showFeedback(t('appsFetchFailed'));
+    } finally {
+      setFetchingApps(false);
+    }
+  }, [activeDevice, showFeedback, t]);
+
+  const handleQuickPaste = useCallback(async () => {
+    const text = await MagicHardware?.getClipboardText?.().catch(() => '');
+    if (!text) {
+      showFeedback(t('clipboardEmpty'));
+      return;
+    }
+    setTvTextInput(text);
+    setTextModalVisible(true);
+  }, [showFeedback, t]);
+
+  const handleToggleFavorite = useCallback((pkg: string) => {
+    setState((prev) => ({
+      ...prev,
+      favoritePackages: prev.favoritePackages.includes(pkg)
+        ? prev.favoritePackages.filter((item) => item !== pkg)
+        : [...prev.favoritePackages, pkg],
+    }));
+  }, []);
+
+  const handleAcStateChange = useCallback(
+    (brand: AcBrand, codeSet: AcCodeSet, acState: AcState) => {
+      setState((prev) => ({
+        ...prev,
+        acBrand: brand,
+        acCodeSet: codeSet,
+        acState,
+      }));
+    },
+    [],
+  );
+
+  const handleSaveRoom = useCallback(() => {
+    const room: RoomProfile = {
+      id: `room-${Date.now()}`,
+      name: `${activeDevice?.name ?? t('magicRemote')} ${state.rooms.length + 1}`,
+      deviceId: state.activeDeviceId,
+      tvBrand: state.tvBrand,
+      tvCodeSet: state.tvCodeSet,
+      acBrand: state.acBrand,
+      acCodeSet: state.acCodeSet,
+      acState: state.acState,
+    };
+    setState((prev) => ({
+      ...prev,
+      rooms: [...prev.rooms, room],
+      activeRoomId: room.id,
+    }));
+    showFeedback(t('roomSaved'));
+  }, [activeDevice?.name, showFeedback, state.acBrand, state.acCodeSet, state.acState, state.activeDeviceId, state.rooms.length, state.tvBrand, state.tvCodeSet, t]);
+
+  const handleActivateRoom = useCallback(
+    (room: RoomProfile) => {
+      setState((prev) => ({
+        ...prev,
+        activeRoomId: room.id,
+        activeDeviceId: room.deviceId,
+        tvBrand: room.tvBrand as TvBrand,
+        tvCodeSet: room.tvCodeSet,
+        acBrand: room.acBrand,
+        acCodeSet: room.acCodeSet,
+        acState: room.acState,
+      }));
+      const device = state.devices.find((item) => item.id === room.deviceId);
+      if (device) connectToDevice(device);
+      showFeedback(t('roomActivated'));
+    },
+    [connectToDevice, showFeedback, state.devices, t],
+  );
+
   const statusColor =
     connectionStatus === 'connected'
       ? '#34D399'
@@ -1102,10 +1305,10 @@ export default function MagicTvRemoteScreen() {
 
   const statusLabel =
     connectionStatus === 'connected'
-      ? 'متصل'
+      ? t('connected')
       : connectionStatus === 'connecting'
-        ? 'جاري الاتصال'
-        : 'غير متصل';
+        ? t('connecting')
+        : t('disconnected');
 
   return (
     <SafeAreaView
@@ -1133,7 +1336,7 @@ export default function MagicTvRemoteScreen() {
           />
           <View style={styles.headerTitles}>
             <Text style={[styles.brandTitle, { color: colors.text }]} numberOfLines={1}>
-              ريموت العقابي
+              {t('magicRemote')}
             </Text>
             <Text
               style={[styles.deviceSubtitle, { color: colors.secondary }]}
@@ -1149,43 +1352,43 @@ export default function MagicTvRemoteScreen() {
         <View style={styles.headerActions}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="إرسال نص"
+            accessibilityLabel={t('keyboard')}
             onPress={() => setTextModalVisible(true)}
             style={[
               styles.iconButton,
               { backgroundColor: colors.cardAlt, borderColor: colors.border },
             ]}
           >
-            <Ionicons name="keypad-outline" size={18} color={colors.text} />
+            <Ionicons name="keypad-outline" size={18} color={accent} />
           </Pressable>
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="تطبيقات التلفاز"
+            accessibilityLabel={t('apps')}
             onPress={() => setAppsModalVisible(true)}
             style={[
               styles.iconButton,
               { backgroundColor: colors.cardAlt, borderColor: colors.border },
             ]}
           >
-            <Ionicons name="apps-outline" size={18} color="#7CE3C3" />
+            <Ionicons name="apps-outline" size={18} color={accent} />
           </Pressable>
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="الأجهزة والاتصال"
+            accessibilityLabel={t('connection')}
             onPress={() => setDeviceModalVisible(true)}
             style={[
               styles.iconButton,
               { backgroundColor: colors.cardAlt, borderColor: colors.border },
             ]}
           >
-            <Ionicons name="tv-outline" size={18} color="#7CE3C3" />
+            <Ionicons name="tv-outline" size={18} color={accent} />
           </Pressable>
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="الإعدادات"
+            accessibilityLabel={t('settings')}
             onPress={() => setSettingsModalVisible(true)}
             style={[
               styles.iconButton,
@@ -1224,23 +1427,34 @@ export default function MagicTvRemoteScreen() {
             onSendKey={handleSendKey}
             onOpenSettings={() => setSettingsModalVisible(true)}
             onOpenKeyboard={() => setTextModalVisible(true)}
+            onOpenApps={() => setAppsModalVisible(true)}
+            onQuickPaste={handleQuickPaste}
             onVoiceSearch={handleVoiceSearch}
+            t={t}
             colors={colors}
             isConnected={connectionStatus === 'connected'}
-            apps={state.customApps}
+            apps={state.customApps.filter((app) =>
+              state.favoritePackages.includes(app.packageName),
+            )}
             onLaunchApp={handleLaunchApp}
             mouse={mouseController}
           />
         ) : screen === 'ac' ? (
           <AcPanel
             colors={colors}
+            t={t}
             onSendIr={handleSendAcIr}
+            onStateChange={handleAcStateChange}
+            initialBrand={state.acBrand}
+            initialCodeSet={state.acCodeSet}
+            initialState={state.acState}
             disabled={!MagicHardware?.transmitIr || irMissing}
             irMissing={irMissing}
           />
         ) : (
           <ConnectionPanel
             colors={colors}
+            t={t}
             devices={state.devices}
             activeDeviceId={state.activeDeviceId}
             connectionStatus={connectionStatus}
@@ -1254,7 +1468,15 @@ export default function MagicTvRemoteScreen() {
             airSupported={airSupported}
             hapticsEnabled={state.hapticsEnabled}
             autoConnect={state.autoConnect}
+            keepAwake={state.keepAwake}
             sensitivity={state.mouseSensitivity}
+            language={state.language}
+            appearance={state.appearance}
+            accentId={state.accent}
+            rooms={state.rooms}
+            activeRoomId={state.activeRoomId}
+            tvBrand={state.tvBrand}
+            tvCodeSet={state.tvCodeSet}
             onConnect={connectToDevice}
             onDisconnect={() => {
               tvRemote.disconnect();
@@ -1263,7 +1485,7 @@ export default function MagicTvRemoteScreen() {
               }
               setState((prev) => ({ ...prev, activeDeviceId: null }));
               setConnectionStatus('disconnected');
-              showFeedback('تم فصل الجهاز');
+              showFeedback(t('disconnectedDevice'));
             }}
             onRemove={handleRemoveDevice}
             onScanNetwork={handleScanNetwork}
@@ -1275,8 +1497,34 @@ export default function MagicTvRemoteScreen() {
             onToggleAutoConnect={() =>
               setState((prev) => ({ ...prev, autoConnect: !prev.autoConnect }))
             }
+            onToggleKeepAwake={() =>
+              setState((prev) => ({ ...prev, keepAwake: !prev.keepAwake }))
+            }
             onSensitivityChange={(value) =>
               setState((prev) => ({ ...prev, mouseSensitivity: value }))
+            }
+            onLanguageChange={(language) =>
+              setState((prev) => ({ ...prev, language }))
+            }
+            onAppearanceChange={(appearance) =>
+              setState((prev) => ({ ...prev, appearance }))
+            }
+            onAccentChange={(accentId) =>
+              setState((prev) => ({ ...prev, accent: accentId }))
+            }
+            onSaveRoom={handleSaveRoom}
+            onActivateRoom={handleActivateRoom}
+            onDeleteRoom={(id) =>
+              setState((prev) => ({
+                ...prev,
+                rooms: prev.rooms.filter((room) => room.id !== id),
+              }))
+            }
+            onTvBrandChange={(brand) =>
+              setState((prev) => ({ ...prev, tvBrand: brand as TvBrand }))
+            }
+            onTvCodeSetChange={(tvCodeSet) =>
+              setState((prev) => ({ ...prev, tvCodeSet }))
             }
           />
         )}
@@ -1301,15 +1549,15 @@ export default function MagicTvRemoteScreen() {
           <Ionicons
             name="radio-outline"
             size={19}
-            color={screen === 'remote' ? '#7CE3C3' : colors.secondary}
+            color={screen === 'remote' ? accent : colors.secondary}
           />
           <Text
             style={[
               styles.bottomNavText,
-              { color: screen === 'remote' ? '#7CE3C3' : colors.secondary },
+              { color: screen === 'remote' ? accent : colors.secondary },
             ]}
           >
-            ريموت
+            {t('remote')}
           </Text>
         </Pressable>
         <Pressable
@@ -1321,15 +1569,15 @@ export default function MagicTvRemoteScreen() {
           <Ionicons
             name="snow-outline"
             size={19}
-            color={screen === 'ac' ? '#7CE3C3' : colors.secondary}
+            color={screen === 'ac' ? accent : colors.secondary}
           />
           <Text
             style={[
               styles.bottomNavText,
-              { color: screen === 'ac' ? '#7CE3C3' : colors.secondary },
+              { color: screen === 'ac' ? accent : colors.secondary },
             ]}
           >
-            سبلت
+            {t('ac')}
           </Text>
         </Pressable>
         <Pressable
@@ -1341,15 +1589,15 @@ export default function MagicTvRemoteScreen() {
           <Ionicons
             name="settings-outline"
             size={19}
-            color={screen === 'connection' ? '#7CE3C3' : colors.secondary}
+            color={screen === 'connection' ? accent : colors.secondary}
           />
           <Text
             style={[
               styles.bottomNavText,
-              { color: screen === 'connection' ? '#7CE3C3' : colors.secondary },
+              { color: screen === 'connection' ? accent : colors.secondary },
             ]}
           >
-            الاتصال
+            {t('connection')}
           </Text>
         </Pressable>
       </View>
@@ -1369,7 +1617,7 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                إدارة الأجهزة والاتصال
+                {t('connectionTitle')}
               </Text>
               <Pressable onPress={() => setDeviceModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
@@ -1382,12 +1630,12 @@ export default function MagicTvRemoteScreen() {
               keyboardShouldPersistTaps="handled"
             >
               <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
-                الأجهزة المحفوظة
+                {t('savedDevices')}
               </Text>
 
               {state.devices.length === 0 ? (
                 <Text style={[styles.emptyHint, { color: colors.secondary }]}>
-                  لا توجد أجهزة محفوظة حالياً. ابحث في الشبكة أو أضف جهازك يدوياً.
+                  {t('noSavedDevices')}
                 </Text>
               ) : (
                 state.devices.map((dev) => {
@@ -1399,7 +1647,7 @@ export default function MagicTvRemoteScreen() {
                         styles.deviceRow,
                         {
                           backgroundColor: isSelected ? colors.cardAlt : colors.input,
-                          borderColor: isSelected ? '#7CE3C3' : colors.border,
+                          borderColor: isSelected ? accent : colors.border,
                         },
                       ]}
                     >
@@ -1415,7 +1663,7 @@ export default function MagicTvRemoteScreen() {
                         </Text>
                         <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
                           {dev.transport === 'bluetooth'
-                            ? `Bluetooth HID · ${dev.bluetoothMac || 'مقترن'}`
+                            ? `Bluetooth HID · ${dev.bluetoothMac || t('paired')}`
                             : `${dev.ip}:${dev.port} · ${dev.protocol.toUpperCase()}`}
                         </Text>
                       </Pressable>
@@ -1434,7 +1682,7 @@ export default function MagicTvRemoteScreen() {
                 <Pressable
                   onPress={handleScanNetwork}
                   disabled={scanning}
-                  style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+                  style={[styles.primaryActionBtn, { backgroundColor: accent }]}
                 >
                   {scanning ? (
                     <ActivityIndicator size="small" color="#081012" />
@@ -1442,7 +1690,7 @@ export default function MagicTvRemoteScreen() {
                     <Ionicons name="wifi-outline" size={18} color="#081012" />
                   )}
                   <Text style={styles.primaryActionText}>
-                    {scanning ? 'جاري الفحص...' : 'فحص شبكة Wi-Fi'}
+                    {scanning ? t('scanningNetwork') : t('scanNetwork')}
                   </Text>
                 </Pressable>
 
@@ -1460,7 +1708,7 @@ export default function MagicTvRemoteScreen() {
                     <Ionicons name="bluetooth-outline" size={18} color={colors.text} />
                   )}
                   <Text style={[styles.secondaryActionText, { color: colors.text }]}>
-                    أجهزة Bluetooth
+                    {t('scanBluetooth')}
                   </Text>
                 </Pressable>
               </View>
@@ -1477,7 +1725,7 @@ export default function MagicTvRemoteScreen() {
                   onPress={() => handleAddDiscoveredDevice(item)}
                   style={[
                     styles.discoveredRow,
-                    { backgroundColor: colors.cardAlt, borderColor: '#7CE3C3' },
+                    { backgroundColor: colors.cardAlt, borderColor: accent },
                   ]}
                 >
                   <View>
@@ -1488,7 +1736,7 @@ export default function MagicTvRemoteScreen() {
                       {item.ip}:{item.port}
                     </Text>
                   </View>
-                  <Text style={styles.connectPillText}>اتصال</Text>
+                  <Text style={styles.connectPillText}>{t('connect')}</Text>
                 </Pressable>
               ))}
 
@@ -1521,18 +1769,18 @@ export default function MagicTvRemoteScreen() {
                       {bt.address}
                     </Text>
                   </View>
-                  <Text style={styles.connectPillText}>ربط HID</Text>
+                  <Text style={styles.connectPillText}>{t('bindHid')}</Text>
                 </Pressable>
               ))}
 
               <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
-                إضافة يدوية
+                {t('manualAdd')}
               </Text>
 
               <TextInput
                 value={manualName}
                 onChangeText={setManualName}
-                placeholder="اسم الجهاز (مثال: Magic A200 Pro)"
+                placeholder={t('deviceName')}
                 placeholderTextColor={colors.secondary}
                 style={[
                   styles.inputField,
@@ -1545,27 +1793,30 @@ export default function MagicTvRemoteScreen() {
               />
 
               <View style={styles.transportRow}>
-                {(['wifi', 'bluetooth'] as const).map((t) => (
+                {(['wifi', 'bluetooth'] as const).map((transport) => (
                   <Pressable
-                    key={t}
-                    onPress={() => setManualTransport(t)}
+                    key={transport}
+                    onPress={() => setManualTransport(transport)}
                     style={[
                       styles.transportChip,
                       {
                         backgroundColor:
-                          manualTransport === t ? colors.cardAlt : colors.input,
+                          manualTransport === transport ? accent : colors.input,
                         borderColor:
-                          manualTransport === t ? '#7CE3C3' : colors.border,
+                          manualTransport === transport ? accent : colors.border,
                       },
                     ]}
                   >
                     <Text
                       style={[
                         styles.transportChipText,
-                        { color: manualTransport === t ? '#7CE3C3' : colors.text },
+                        {
+                          color:
+                            manualTransport === transport ? colors.text : colors.text,
+                        },
                       ]}
                     >
-                      {t === 'wifi' ? 'شبكة Wi-Fi (IP)' : 'Bluetooth HID'}
+                      {transport === 'wifi' ? 'Wi-Fi (IP)' : 'Bluetooth HID'}
                     </Text>
                   </Pressable>
                 ))}
@@ -1610,7 +1861,7 @@ export default function MagicTvRemoteScreen() {
                 <TextInput
                   value={manualBtMac}
                   onChangeText={setManualBtMac}
-                  placeholder="عنوان MAC للبلوتوث (اختياري)"
+                  placeholder={t('btMacPlaceholder')}
                   placeholderTextColor={colors.secondary}
                   style={[
                     styles.inputField,
@@ -1623,12 +1874,46 @@ export default function MagicTvRemoteScreen() {
                 />
               )}
 
+              <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
+                {t('tvBoxes')}
+              </Text>
+              {TV_BOXES.map((box) => (
+                <Pressable
+                  key={box.id}
+                  onPress={() => {
+                    setManualName(box.name);
+                    setManualPort(String(box.port));
+                    setManualProtocol(box.protocol);
+                    setManualTransport('wifi');
+                  }}
+                  style={[
+                    styles.deviceRow,
+                    {
+                      backgroundColor: colors.cardAlt,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                >
+                  <View style={styles.deviceRowMain}>
+                    <Text style={[styles.deviceName, { color: colors.text }]}>
+                      {box.name}
+                    </Text>
+                    <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                      {box.hints.join(' · ')}
+                    </Text>
+                  </View>
+                  <Text style={[styles.deviceMeta, { color: accent }]}>
+                    {box.port}
+                  </Text>
+                </Pressable>
+              ))}
+
               <Pressable
                 onPress={handleSaveManualDevice}
-                style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+                style={[styles.primaryActionBtn, { backgroundColor: accent }]}
               >
                 <Ionicons name="checkmark-circle-outline" size={19} color="#081012" />
-                <Text style={styles.primaryActionText}>حفظ والاتصال</Text>
+                <Text style={styles.primaryActionText}>{t('saveAndConnect')}</Text>
               </Pressable>
             </ScrollView>
           </View>
@@ -1650,7 +1935,7 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                إرسال نص إلى التلفاز
+                {t('textTitle')}
               </Text>
               <Pressable onPress={() => setTextModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
@@ -1660,7 +1945,7 @@ export default function MagicTvRemoteScreen() {
             <TextInput
               value={tvTextInput}
               onChangeText={setTvTextInput}
-              placeholder="اكتب كلمة البحث أو النص هنا..."
+              placeholder={t('textPlaceholder')}
               placeholderTextColor={colors.secondary}
               autoFocus
               style={[
@@ -1685,17 +1970,17 @@ export default function MagicTvRemoteScreen() {
                 ]}
               >
                 <Text style={[styles.secondaryActionText, { color: colors.text }]}>
-                  إلغاء
+                  {t('cancel')}
                 </Text>
               </Pressable>
 
               <Pressable
                 onPress={handleSendTvText}
                 disabled={sendingText}
-                style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+                style={[styles.primaryActionBtn, { backgroundColor: accent }]}
               >
                 <Text style={styles.primaryActionText}>
-                  {sendingText ? 'جاري الإرسال...' : 'إرسال النص'}
+                  {sendingText ? t('sending') : t('sendText')}
                 </Text>
               </Pressable>
             </View>
@@ -1718,7 +2003,7 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                إعدادات الريموت والماوس
+                {t('settings')}
               </Text>
               <Pressable onPress={() => setSettingsModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
@@ -1742,10 +2027,10 @@ export default function MagicTvRemoteScreen() {
                 ]}
               >
                 <Text style={[styles.settingLabel, { color: colors.text }]}>
-                  الاهتزاز اللمسي عند الضغط (Haptics)
+                  {t('haptics')}
                 </Text>
                 <Text style={styles.settingValueAccent}>
-                  {state.hapticsEnabled ? 'مفعّل' : 'متوقف'}
+                  {state.hapticsEnabled ? t('enabled') : t('disabled')}
                 </Text>
               </Pressable>
 
@@ -1762,10 +2047,10 @@ export default function MagicTvRemoteScreen() {
                 ]}
               >
                 <Text style={[styles.settingLabel, { color: colors.text }]}>
-                  الاتصال التلقائي بآخر جهاز
+                  {t('autoConnect')}
                 </Text>
                 <Text style={styles.settingValueAccent}>
-                  {state.autoConnect ? 'مفعّل' : 'متوقف'}
+                  {state.autoConnect ? t('enabled') : t('disabled')}
                 </Text>
               </Pressable>
 
@@ -1776,7 +2061,7 @@ export default function MagicTvRemoteScreen() {
                 ]}
               >
                 <Text style={[styles.settingLabel, { color: colors.text }]}>
-                  حساسية الماوس واللمس: {state.mouseSensitivity.toFixed(2)}x
+                  {t('sensitivity')}: {state.mouseSensitivity.toFixed(2)}x
                 </Text>
                 <View style={styles.sensitivityBtnsRow}>
                   {[0.8, 1.35, 1.9, 2.5].map((preset) => {
@@ -1794,8 +2079,8 @@ export default function MagicTvRemoteScreen() {
                         style={[
                           styles.presetPill,
                           {
-                            backgroundColor: active ? '#7CE3C3' : colors.cardAlt,
-                            borderColor: active ? '#7CE3C3' : colors.border,
+                            backgroundColor: active ? accent : colors.cardAlt,
+                            borderColor: active ? accent : colors.border,
                           },
                         ]}
                       >
@@ -1815,7 +2100,7 @@ export default function MagicTvRemoteScreen() {
 
               <View style={styles.customAppsHeader}>
                 <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
-                  اختصارات التطبيقات
+                  {t('apps')}
                 </Text>
                 <Pressable
                   onPress={() => {
@@ -1824,8 +2109,8 @@ export default function MagicTvRemoteScreen() {
                   }}
                   style={styles.addShortcutBtn}
                 >
-                  <Ionicons name="add-circle-outline" size={18} color="#7CE3C3" />
-                  <Text style={styles.addShortcutText}>إضافة تطبيق</Text>
+                  <Ionicons name="add-circle-outline" size={18} color={accent} />
+                  <Text style={styles.addShortcutText}>{t('addApp')}</Text>
                 </Pressable>
               </View>
 
@@ -1872,9 +2157,9 @@ export default function MagicTvRemoteScreen() {
 
               <Pressable
                 onPress={() => setSettingsModalVisible(false)}
-                style={[styles.settingsDoneButton, { backgroundColor: '#7CE3C3' }]}
+                style={[styles.settingsDoneButton, { backgroundColor: accent }]}
               >
-                <Text style={styles.primaryActionText}>تم</Text>
+                <Text style={styles.primaryActionText}>{t('done')}</Text>
               </Pressable>
             </ScrollView>
           </View>
@@ -1896,7 +2181,7 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                إضافة اختصار تطبيق
+                {t('addApp')}
               </Text>
               <Pressable onPress={() => setAddAppModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
@@ -1906,7 +2191,7 @@ export default function MagicTvRemoteScreen() {
             <TextInput
               value={newAppName}
               onChangeText={setNewAppName}
-              placeholder="اسم التطبيق (مثال: Plex)"
+              placeholder={t('appNamePlaceholder')}
               placeholderTextColor={colors.secondary}
               style={[
                 styles.inputField,
@@ -1921,7 +2206,7 @@ export default function MagicTvRemoteScreen() {
             <TextInput
               value={newAppPackage}
               onChangeText={setNewAppPackage}
-              placeholder="اسم الحزمة (مثال: com.plexapp.android)"
+              placeholder={t('packagePlaceholder')}
               placeholderTextColor={colors.secondary}
               autoCapitalize="none"
               style={[
@@ -1936,9 +2221,9 @@ export default function MagicTvRemoteScreen() {
 
             <Pressable
               onPress={handleAddCustomApp}
-              style={[styles.primaryActionBtn, { backgroundColor: '#7CE3C3' }]}
+              style={[styles.primaryActionBtn, { backgroundColor: accent }]}
             >
-              <Text style={styles.primaryActionText}>حفظ الاختصار</Text>
+              <Text style={styles.primaryActionText}>{t('saveShortcut')}</Text>
             </Pressable>
           </View>
         </View>
@@ -1959,7 +2244,7 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                تطبيقات التلفاز
+                {t('apps')}
               </Text>
               <Pressable onPress={() => setAppsModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
@@ -1970,38 +2255,130 @@ export default function MagicTvRemoteScreen() {
               style={styles.modalScroll}
               contentContainerStyle={styles.modalScrollContent}
             >
-              {state.customApps.length === 0 ? (
+              <Pressable
+                onPress={handleFetchInstalledApps}
+                disabled={fetchingApps}
+                style={[styles.primaryActionBtn, { backgroundColor: accent }]}
+              >
+                {fetchingApps ? (
+                  <ActivityIndicator size="small" color="#081012" />
+                ) : (
+                  <Ionicons name="refresh-outline" size={19} color="#081012" />
+                )}
+                <Text style={styles.primaryActionText}>
+                  {fetchingApps ? t('fetchingApps') : t('fetchApps')}
+                </Text>
+              </Pressable>
+              <Text style={[styles.emptyHint, { color: colors.secondary }]}>
+                {t('appsHelp')}
+              </Text>
+
+              <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
+                {t('installedApps')}
+              </Text>
+              {installedApps.length === 0 ? (
                 <Text style={[styles.emptyHint, { color: colors.secondary }]}>
-                  لا توجد تطبيقات محفوظة. أضف تطبيقاً من الإعدادات.
+                  {t('noApps')}
                 </Text>
               ) : (
-                state.customApps.map((app) => (
-                  <Pressable
-                    key={app.id}
-                    accessibilityRole="button"
-                    onPress={() => {
-                      setAppsModalVisible(false);
-                      handleLaunchApp(app.packageName);
-                    }}
-                    style={[
-                      styles.deviceRow,
-                      {
-                        backgroundColor: colors.cardAlt,
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    <View style={styles.deviceRowMain}>
-                      <Text style={[styles.deviceName, { color: colors.text }]}>
-                        {app.name}
-                      </Text>
-                      <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
-                        {app.packageName}
-                      </Text>
+                installedApps.map((app) => {
+                  const favorite = state.favoritePackages.includes(app.packageName);
+                  return (
+                    <View
+                      key={app.id}
+                      style={[
+                        styles.deviceRow,
+                        {
+                          backgroundColor: colors.cardAlt,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <Pressable
+                        style={styles.deviceRowMain}
+                        onPress={() => {
+                          setAppsModalVisible(false);
+                          handleLaunchApp(app.packageName);
+                        }}
+                      >
+                        <Text style={[styles.deviceName, { color: colors.text }]}>
+                          {app.name}
+                        </Text>
+                        <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                          {app.packageName}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t(
+                          favorite ? 'removeFavorite' : 'addFavorite',
+                        )}
+                        onPress={() => handleToggleFavorite(app.packageName)}
+                        style={styles.deleteBtn}
+                      >
+                        <Ionicons
+                          name={favorite ? 'star' : 'star-outline'}
+                          size={19}
+                          color={accent}
+                        />
+                      </Pressable>
                     </View>
-                    <Ionicons name="open-outline" size={18} color="#7CE3C3" />
-                  </Pressable>
-                ))
+                  );
+                })
+              )}
+
+              <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
+                {t('allApps')}
+              </Text>
+              {state.customApps.length === 0 ? (
+                <Text style={[styles.emptyHint, { color: colors.secondary }]}>
+                  {t('noApps')}
+                </Text>
+              ) : (
+                state.customApps.map((app) => {
+                  const favorite = state.favoritePackages.includes(app.packageName);
+                  return (
+                    <View
+                      key={app.id}
+                      style={[
+                        styles.deviceRow,
+                        {
+                          backgroundColor: colors.cardAlt,
+                          borderColor: colors.border,
+                        },
+                      ]}
+                    >
+                      <Pressable
+                        style={styles.deviceRowMain}
+                        onPress={() => {
+                          setAppsModalVisible(false);
+                          handleLaunchApp(app.packageName);
+                        }}
+                      >
+                        <Text style={[styles.deviceName, { color: colors.text }]}>
+                          {app.name}
+                        </Text>
+                        <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
+                          {app.packageName}
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t(
+                          favorite ? 'removeFavorite' : 'addFavorite',
+                        )}
+                        onPress={() => handleToggleFavorite(app.packageName)}
+                        style={styles.deleteBtn}
+                      >
+                        <Ionicons
+                          name={favorite ? 'star' : 'star-outline'}
+                          size={19}
+                          color={accent}
+                        />
+                      </Pressable>
+                    </View>
+                  );
+                })
               )}
 
               <Pressable
@@ -2009,13 +2386,10 @@ export default function MagicTvRemoteScreen() {
                   setAppsModalVisible(false);
                   setAddAppModalVisible(true);
                 }}
-                style={[
-                  styles.primaryActionBtn,
-                  { backgroundColor: '#7CE3C3' },
-                ]}
+                style={[styles.primaryActionBtn, { backgroundColor: accent }]}
               >
                 <Ionicons name="add-circle-outline" size={19} color="#081012" />
-                <Text style={styles.primaryActionText}>إضافة تطبيق</Text>
+                <Text style={styles.primaryActionText}>{t('addApp')}</Text>
               </Pressable>
             </ScrollView>
           </View>
@@ -2037,7 +2411,7 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                رمز الاقتران
+                {t('pairing')}
               </Text>
               <Pressable
                 onPress={() => {
@@ -2050,7 +2424,7 @@ export default function MagicTvRemoteScreen() {
             </View>
 
             <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
-              أدخل الرمز المكوّن من 6 خانات الظاهر على شاشة التلفاز.
+              {t('pairingHelp')}
             </Text>
             <TextInput
               value={pairingCode}
@@ -2079,7 +2453,7 @@ export default function MagicTvRemoteScreen() {
               }}
               style={[
                 styles.primaryActionBtn,
-                { backgroundColor: pairingCode.length === 6 ? '#7CE3C3' : colors.cardAlt },
+                { backgroundColor: pairingCode.length === 6 ? accent : colors.cardAlt },
               ]}
             >
               <Text
@@ -2088,7 +2462,7 @@ export default function MagicTvRemoteScreen() {
                   { color: pairingCode.length === 6 ? '#081012' : colors.secondary },
                 ]}
               >
-                تأكيد الاقتران
+                {t('confirmPairing')}
               </Text>
             </Pressable>
           </View>
