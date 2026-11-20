@@ -33,11 +33,19 @@ jobs:
       - name: Build APK with Gradle
         run: |
           cd android
+          build_ok=0
           for i in 1 2 3; do
-            ./gradlew assembleDebug --no-daemon --refresh-dependencies && break
+            if ./gradlew assembleDebug --no-daemon --refresh-dependencies; then
+              build_ok=1
+              break
+            fi
             echo "Gradle attempt $i failed, retrying..."
             sleep 5
           done
+          if [ "$build_ok" -ne 1 ]; then
+            echo "Gradle build failed after 3 attempts"
+            exit 1
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

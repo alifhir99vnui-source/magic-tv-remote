@@ -658,10 +658,14 @@ function writeNativeModule(config) {
 
 function registerPackage(config) {
   return withMainApplication(config, (cfg) => {
-    if (cfg.modResults.contents.includes('MagicControlPackage()')) return cfg;
+    if (
+      cfg.modResults.contents.includes('MagicControlModule.MagicControlPackage()')
+    ) {
+      return cfg;
+    }
     cfg.modResults.contents = cfg.modResults.contents.replace(
       /PackageList\(this\)\.packages\.apply \{/,
-      'PackageList(this).packages.apply {\n           add(MagicControlPackage())',
+      'PackageList(this).packages.apply {\n           add(MagicControlModule.MagicControlPackage())',
     );
     return cfg;
   });
