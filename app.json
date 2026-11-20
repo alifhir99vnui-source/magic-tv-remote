@@ -42,7 +42,8 @@
       "expo-router",
       "expo-secure-store",
       "./plugins/withMagicHardware",
-      "./plugins/withMagicHardware.js"
+      "./plugins/withFullscreen",
+      "./plugins/withNativeRemote"
     ],
     "experiments": {
       "typedRoutes": true,

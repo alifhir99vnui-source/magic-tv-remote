@@ -22,7 +22,7 @@ jobs:
         run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
       - name: Prebuild Android project
-        run: npx expo prebuild --platform android --non-interactive
+        run: CI=1 npx expo prebuild --platform android
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -34,7 +34,7 @@ jobs:
         run: |
           cd android
           for i in 1 2 3; do
-            ./gradlew assembleRelease --no-daemon --refresh-dependencies && break
+            ./gradlew assembleDebug --no-daemon --refresh-dependencies && break
             echo "Gradle attempt $i failed, retrying..."
             sleep 5
           done
@@ -43,4 +43,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: magic-tv-remote-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/debug/*.apk

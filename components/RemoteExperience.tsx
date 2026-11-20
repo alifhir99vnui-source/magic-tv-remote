@@ -60,6 +60,7 @@ export function RemoteExperience({
   activeTab,
   onTabChange,
   onSendKey,
+  onOpenSettings,
   colors,
   apps,
   onLaunchApp,
@@ -242,6 +243,22 @@ export function RemoteExperience({
               >
                 123
               </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="الإعدادات"
+              onPress={onOpenSettings}
+              style={[
+                styles.circleActionButton,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Ionicons
+                name="settings-outline"
+                size={20}
+                color={colors.text}
+              />
             </Pressable>
           </View>
 
@@ -499,36 +516,6 @@ export function RemoteExperience({
         </ScrollView>
       ) : (
         <View style={styles.mouseContainer}>
-          <View style={styles.mouseModeRow}>
-            {(['touchpad', 'air'] as const).map((m) => {
-              const selected = mouse.mode === m;
-              return (
-                <Pressable
-                  key={m}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  onPress={() => mouse.setMode(m)}
-                  style={[
-                    styles.mouseModePill,
-                    {
-                      backgroundColor: selected ? ACCENT : colors.card,
-                      borderColor: selected ? ACCENT : colors.border,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.mouseModeText,
-                      { color: selected ? '#0A1012' : colors.text },
-                    ]}
-                  >
-                    {m === 'touchpad' ? 'لوحة لمس' : 'ماوس هوائي (Gyro)'}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
           <View
             {...touchpadResponder.panHandlers}
             style={[
@@ -551,47 +538,6 @@ export function RemoteExperience({
             <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
               اسحب لتحريك المؤشر · اضغط للنقر
             </Text>
-          </View>
-
-          <View style={styles.mouseButtonsRow}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={mouse.onTouchpadPress}
-              style={[
-                styles.mouseActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.mouseActionText, { color: colors.text }]}>
-                نقر يسار
-              </Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={mouse.onRightClick}
-              style={[
-                styles.mouseActionButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              <Text style={[styles.mouseActionText, { color: colors.text }]}>
-                رجوع / يمين
-              </Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              onPress={mouse.onRecenter}
-              style={[
-                styles.mouseActionButton,
-                { backgroundColor: colors.cardAlt, borderColor: ACCENT },
-              ]}
-            >
-              <Text style={[styles.mouseActionText, { color: ACCENT }]}>
-                توسيط
-              </Text>
-            </Pressable>
           </View>
 
           <View style={styles.scrollControlsRow}>
