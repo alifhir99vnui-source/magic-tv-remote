@@ -86,8 +86,14 @@ function AcPanelComponent({
     setState((current) => ({ ...current, ...patch }));
   };
 
-  const submit = async () => {
-    await onSendIr(brand, state, codeSet);
+  const submit = async (nextState: AcState = state) => {
+    await onSendIr(brand, nextState, codeSet);
+  };
+
+  const updateAndSend = (patch: Partial<AcState>) => {
+    const nextState = { ...state, ...patch };
+    setState(nextState);
+    void submit(nextState).catch(() => {});
   };
 
   return (
@@ -109,7 +115,7 @@ function AcPanelComponent({
           const selected = brand === item.brand;
           return (
             <Pressable
-      onPressIn={onPressFeedback}
+              onPressIn={onPressFeedback}
               key={item.brand}
               accessibilityRole="button"
               accessibilityState={{ selected }}
@@ -148,7 +154,7 @@ function AcPanelComponent({
         <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('codeSet')}</Text>
         {AC_CODE_SETS.map((value) => (
           <Pressable
-      onPressIn={onPressFeedback}
+            onPressIn={onPressFeedback}
             key={value}
             accessibilityRole="button"
             onPress={() => setCodeSet(value)}
@@ -202,7 +208,7 @@ function AcPanelComponent({
             </Text>
           </View>
           <Pressable
-      onPressIn={onPressFeedback}
+            onPressIn={onPressFeedback}
             accessibilityRole="switch"
             accessibilityState={{ checked: state.power }}
             onPress={() => update({ power: !state.power })}
@@ -265,7 +271,7 @@ function AcPanelComponent({
             const selected = state.mode === mode;
             return (
               <Pressable
-      onPressIn={onPressFeedback}
+                onPressIn={onPressFeedback}
                 key={mode}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
@@ -297,7 +303,7 @@ function AcPanelComponent({
             const selected = state.fan === fan;
             return (
               <Pressable
-      onPressIn={onPressFeedback}
+                onPressIn={onPressFeedback}
                 key={fan}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
@@ -330,55 +336,57 @@ function AcPanelComponent({
           { backgroundColor: colors.card, borderColor: colors.border },
         ]}
       >
-        <ToggleRow
-          label={t('swing')}
-          value={state.swing}
-          colors={colors}
-          onPressFeedback={onPressFeedback}
-          onPress={() => update({ swing: !state.swing })}
-        />
-        <ToggleRow
-          label={t('quickCool')}
-          value={state.turbo}
-          colors={colors}
-          onPressFeedback={onPressFeedback}
-          onPress={() => update({ turbo: !state.turbo })}
-        />
-        <ToggleRow
-          label={t('eco')}
-          value={state.eco}
-          colors={colors}
-          onPressFeedback={onPressFeedback}
-          onPress={() => update({ eco: !state.eco })}
-        />
-        <ToggleRow
-          label={t('ledOff')}
-          value={state.ledOff}
-          colors={colors}
-          onPressFeedback={onPressFeedback}
-          onPress={() => update({ ledOff: !state.ledOff })}
-        />
-        <ToggleRow
-          label={t('sleepTimer')}
-          value={state.sleepTimer > 0 || state.sleep}
-          colors={colors}
-          onPressFeedback={onPressFeedback}
-          onPress={() => {
-            const index = AC_SLEEP_TIMERS.indexOf(state.sleepTimer);
-            const next = AC_SLEEP_TIMERS[(index + 1) % AC_SLEEP_TIMERS.length];
-            update({ sleepTimer: next, sleep: next > 0 });
-          }}
-        />
+        <View style={[styles.optionRow, { marginBottom: 0 }]}>
+          <ToggleRow
+            label={t('swing')}
+            value={state.swing}
+            colors={colors}
+            onPressFeedback={onPressFeedback}
+            onPress={() => updateAndSend({ swing: !state.swing })}
+          />
+          <ToggleRow
+            label={t('quickCool')}
+            value={state.turbo}
+            colors={colors}
+            onPressFeedback={onPressFeedback}
+            onPress={() => updateAndSend({ turbo: !state.turbo })}
+          />
+          <ToggleRow
+            label={t('eco')}
+            value={state.eco}
+            colors={colors}
+            onPressFeedback={onPressFeedback}
+            onPress={() => updateAndSend({ eco: !state.eco })}
+          />
+          <ToggleRow
+            label={t('ledOff')}
+            value={state.ledOff}
+            colors={colors}
+            onPressFeedback={onPressFeedback}
+            onPress={() => updateAndSend({ ledOff: !state.ledOff })}
+          />
+          <ToggleRow
+            label={t('sleepTimer')}
+            value={state.sleepTimer > 0 || state.sleep}
+            colors={colors}
+            onPressFeedback={onPressFeedback}
+            onPress={() => {
+              const index = AC_SLEEP_TIMERS.indexOf(state.sleepTimer);
+              const next = AC_SLEEP_TIMERS[(index + 1) % AC_SLEEP_TIMERS.length];
+              updateAndSend({ sleepTimer: next, sleep: next > 0 });
+            }}
+          />
+        </View>
         {state.sleepTimer > 0 ? (
-          <Text style={[styles.cardHint, { color: accent }]}>{`${state.sleepTimer} min`}</Text>
+          <Text style={[styles.cardHint, { color: accent, marginTop: 8 }]}>{`${state.sleepTimer} min`}</Text>
         ) : null}
       </View>
 
       <Pressable
-      onPressIn={onPressFeedback}
+        onPressIn={onPressFeedback}
         accessibilityRole="button"
         disabled={disabled}
-        onPress={submit}
+        onPress={() => void submit()}
         style={[
           styles.sendButton,
           { backgroundColor: disabled ? colors.cardAlt : accent },
@@ -420,25 +428,25 @@ function ToggleRow({
   return (
     <Pressable
       onPressIn={onPressFeedback}
-      accessibilityRole="switch"
-      accessibilityState={{ checked: value }}
+      accessibilityRole="button"
+      accessibilityState={{ selected: value }}
       onPress={onPress}
-      style={styles.toggleRow}
+      style={[
+        styles.optionPill,
+        {
+          backgroundColor: value ? colors.accent : colors.cardAlt,
+          borderColor: value ? colors.accent : colors.border,
+        },
+      ]}
     >
-      <Text style={[styles.toggleLabel, { color: colors.text }]}>{label}</Text>
-      <View
+      <Text
         style={[
-          styles.toggleTrack,
-          { backgroundColor: value ? colors.accent : colors.cardAlt },
+          styles.optionText,
+          { color: value ? '#081012' : colors.text },
         ]}
       >
-        <View
-          style={[
-            styles.toggleThumb,
-            { transform: [{ translateX: value ? 18 : 0 }] },
-          ]}
-        />
-      </View>
+        {label}
+      </Text>
     </Pressable>
   );
 }

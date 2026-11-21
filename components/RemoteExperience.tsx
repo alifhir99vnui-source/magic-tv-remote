@@ -551,26 +551,6 @@ function RemoteExperienceComponent({
                 { backgroundColor: colors.card, borderColor: colors.border },
               ]}
             >
-              <Ionicons
-                name={
-                  mouse.mode === 'air'
-                    ? 'navigate-circle-outline'
-                    : mouse.mode === 'swipe'
-                      ? 'swap-horizontal-outline'
-                      : 'finger-print-outline'
-                }
-                size={34}
-                color={accent}
-              />
-              <Text style={[styles.touchpadStatus, { color: colors.text }]}>
-                {mouse.mode === 'air' ? mouse.airStatus : mouse.pointerStatus}
-              </Text>
-              <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
-                {t('touchpadHint')}
-              </Text>
-              <Text style={[styles.scrollModeText, { color: colors.secondary }]}>
-                {mouse.scrollInverted ? t('scrollInverted') : t('scrollNormal')}
-              </Text>
             </View>
           </View>
 

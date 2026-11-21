@@ -527,7 +527,15 @@ export default function MagicTvRemoteScreen() {
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyThrottleRef = useRef(createThrottle(40));
-  const mouseMoveThrottleRef = useRef(createThrottle(30));
+  const pointerDeltaRef = useRef({ x: 0, y: 0 });
+  const pointerFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (pointerFlushRef.current) clearTimeout(pointerFlushRef.current);
+    },
+    [],
+  );
   const mouseScrollThrottleRef = useRef(createThrottle(30));
   const airMoveThrottleRef = useRef(createThrottle(30));
   const [feedback, setFeedback] = useState('');
@@ -766,15 +774,18 @@ export default function MagicTvRemoteScreen() {
         sent = await sendTvShellCommand('am start -a android.settings.SETTINGS');
       }
 
-      if (!sent && MagicHardware?.transmitIr) {
-        const ir = buildTvIrPattern(state.tvBrand, state.tvCodeSet, key);
-        try {
-          sent = await MagicHardware.transmitIr(ir.carrierFrequency, ir.pattern);
-        } catch {
-          sent = false;
+      if (!sent && MagicHardware?.transmitIr && !irMissing) {
+          const ir = buildTvIrPattern(state.tvBrand, state.tvCodeSet, key, 38000);
+          try {
+            sent = Boolean(await MagicHardware.transmitIr(ir.carrierFrequency, ir.pattern));
+          } catch {
+            sent = false;
+          }
         }
-      }
-      return sent;
+        if (!sent && MagicHardware?.sendIrKey && !irMissing) {
+          sent = await MagicHardware.sendIrKey(key).catch(() => false);
+        }
+        return sent;
     },
     [
       activeDevice,
@@ -887,9 +898,14 @@ export default function MagicTvRemoteScreen() {
 
   const handleVoiceSearch = useCallback(async () => {
     tap();
-    const voiceSent = await handleSendKey('voice');
-    if (!voiceSent) await handleSendKey('search');
-  }, [handleSendKey, tap]);
+    const [searchOpened, searchSent] = await Promise.all([
+      sendTvShellCommand('am start -a android.search.action.GLOBAL_SEARCH').catch(
+        () => false,
+      ),
+      handleSendKey('search').catch(() => false),
+    ]);
+    if (!searchOpened && !searchSent) showFeedback(t('voiceUnavailable'));
+  }, [handleSendKey, sendTvShellCommand, showFeedback, t, tap]);
 
   useEffect(() => {
     let mounted = true;
@@ -952,30 +968,76 @@ export default function MagicTvRemoteScreen() {
 
   const handleTouchpadDelta = useCallback(
     (dx: number, dy: number) => {
-      if (!mouseMoveThrottleRef.current()) return;
-      const scaledX = Math.round(dx * state.mouseSensitivity);
-      const scaledY = Math.round(dy * state.mouseSensitivity);
-      setPointerStatus(`${t('mouse')} (${scaledX}, ${scaledY})`);
-      if (MagicHardware?.sendMouseMove) {
-        MagicHardware.sendMouseMove(scaledX, scaledY).catch(() => {});
-      }
-      if (activeDevice) {
-        sendCommandToTv(activeDevice, { type: 'mouse_move', dx: scaledX, dy: scaledY }, 250).catch(() => {});
-      }
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+      const sensitivity = Math.min(3, Math.max(0.2, state.mouseSensitivity || 1));
+      pointerDeltaRef.current.x += dx * sensitivity;
+      pointerDeltaRef.current.y += dy * sensitivity;
+      if (pointerFlushRef.current != null) return;
+
+      const isWifi = Boolean(activeDevice) && activeDevice?.transport !== 'bluetooth';
+      pointerFlushRef.current = setTimeout(() => {
+        pointerFlushRef.current = null;
+        const pending = pointerDeltaRef.current;
+        const moveX = Math.round(pending.x);
+        const moveY = Math.round(pending.y);
+        if (moveX === 0 && moveY === 0) return;
+        pointerDeltaRef.current = {
+          x: pending.x - moveX,
+          y: pending.y - moveY,
+        };
+
+        if (!isWifi) {
+          if (MagicHardware?.sendMouseMove) {
+            void MagicHardware.sendMouseMove(moveX, moveY).catch(() => {});
+          }
+          return;
+        }
+
+        const STEP = 12;
+        const horizontal = Math.abs(moveX) >= Math.abs(moveY);
+        const key: 'up' | 'down' | 'left' | 'right' = horizontal
+          ? moveX > 0 ? 'right' : 'left'
+          : moveY > 0 ? 'down' : 'up';
+        const amount = horizontal ? Math.abs(moveX) : Math.abs(moveY);
+        if (amount < STEP) {
+          pointerDeltaRef.current.x += moveX;
+          pointerDeltaRef.current.y += moveY;
+          return;
+        }
+
+        if (horizontal) {
+          pointerDeltaRef.current.x += moveX > 0 ? -STEP : STEP;
+        } else {
+          pointerDeltaRef.current.y += moveY > 0 ? -STEP : STEP;
+        }
+
+        void handleSendKey(key).then((sent) => {
+          if (sent) return;
+          const code = KEYCODE_MAP[key]?.androidKeyCode;
+          if (typeof code === 'number') {
+            void sendTvShellCommand(`input keyevent ${code}`);
+          }
+        });
+      }, isWifi ? 45 : 20);
     },
-    [state.mouseSensitivity, activeDevice, t],
+    [activeDevice, handleSendKey, sendTvShellCommand, state.mouseSensitivity],
   );
 
-  const handleTouchpadPress = useCallback(() => {
+  const handleTouchpadPress = useCallback(async () => {
     tap();
-    setPointerStatus(t('leftClick'));
+    const isWifi = Boolean(activeDevice) && activeDevice?.transport !== 'bluetooth';
+    if (isWifi) {
+      const sent = await handleSendKey('ok');
+      if (!sent) {
+        const code = KEYCODE_MAP.ok.androidKeyCode;
+        await sendTvShellCommand(`input keyevent ${code}`).catch(() => false);
+      }
+      return;
+    }
     if (MagicHardware?.sendMouseClick) {
-      MagicHardware.sendMouseClick('left').catch(() => {});
+      void MagicHardware.sendMouseClick('left').catch(() => {});
     }
-    if (activeDevice) {
-      sendCommandToTv(activeDevice, { type: 'mouse_click', button: 'left' }, 250).catch(() => {});
-    }
-  }, [activeDevice, t, tap]);
+  }, [activeDevice, handleSendKey, sendTvShellCommand, tap]);
 
   const handleScroll = useCallback(
     (deltaY: number) => {

@@ -229,8 +229,12 @@ export class RealIrController {
   }
 
   async send(signal: IrSignal): Promise<boolean> {
-    if (!this.transmit) return false;
-    return Promise.resolve(this.transmit(signal.carrierFrequency, signal.pattern));
+    if (!this.transmit || !signal.pattern.length) return false;
+    try {
+      return Boolean(await Promise.resolve(this.transmit(signal.carrierFrequency, signal.pattern)));
+    } catch {
+      return false;
+    }
   }
 
   static nec(lowAddress: number, highAddress: number, command: number, carrierFrequency = 38000): IrSignal {

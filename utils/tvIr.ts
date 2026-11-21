@@ -55,6 +55,9 @@ export const TV_CODE_SETS = [1, 2, 3] as const;
 const BASE_COMMANDS: Record<string, number> = {
   power: 0x45,
   mute: 0x43,
+  search: 0x48,
+  voice: 0x48,
+  mouse: 0x6d,
   up: 0x60,
   down: 0x61,
   left: 0x62,
@@ -217,10 +220,11 @@ export function buildTvIrPattern(
   carrierFrequency = 38000,
 ): { carrierFrequency: number; pattern: number[] } {
   const profile = TV_BRAND_PROFILES[brand] ?? TV_BRAND_PROFILES.Generic;
-  const command = profile.commands[key] ?? 0x00;
-  const address = profile.address[codeSet];
+  const command = profile.commands[key] ?? profile.commands.select ?? profile.commands.ok ?? 0x00;
+  const address = profile.address[codeSet] ?? profile.address[1];
+  const frequency = carrierFrequency > 0 ? carrierFrequency : 38000;
   if (brand === 'Samsung') {
-    return RealIrController.samsung32((address.low << 8) | address.high, command, carrierFrequency);
+    return RealIrController.samsung32((address.low << 8) | address.high, command, frequency);
   }
-  return RealIrController.nec(address.low, address.high, command, carrierFrequency);
+  return RealIrController.nec(address.low, address.high, command, frequency);
 }
