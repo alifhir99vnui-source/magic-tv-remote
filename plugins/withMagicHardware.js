@@ -22,16 +22,16 @@ const withMagicHardware = (config) => {
       }
     }
 
-    manifest.queries = manifest.queries || [];
-    const voiceQuery = {
-      intent: [{ action: { $: { 'android:name': 'android.speech.action.RECOGNIZE_SPEECH' } } }],
-    };
-    const hasVoiceQuery = manifest.queries.some(
-      (q) => q.intent && q.intent.some(
-        (i) => i.action && i.action.$ && i.action.$['android:name'] === 'android.speech.action.RECOGNIZE_SPEECH',
-      ),
-    );
-    if (!hasVoiceQuery) manifest.queries.push(voiceQuery);
+    if (Array.isArray(manifest.queries)) {
+      manifest.queries = manifest.queries.filter((query) => {
+        const actions = query.intent?.actions?.action ?? [];
+        return !actions.some(
+          (action) => action?.$?.['android:name'] === 'android.speech.action.RECOGNIZE_SPEECH',
+        );
+      });
+      if (manifest.queries.length === 0) delete manifest.queries;
+    }
+
     return cfg;
   });
 

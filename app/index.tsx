@@ -31,6 +31,7 @@ import {
   RemoteAppShortcut,
   RemoteExperience,
   RemoteMouseController,
+  RemoteMouseMode,
 } from '../components/RemoteExperience';
 import { AcPanel } from '../components/AcPanel';
 import { ConnectionPanel } from '../components/ConnectionPanel';
@@ -43,8 +44,10 @@ import {
   createDefaultAcState,
 } from '../utils/acIr';
 import { RoomProfile } from '../utils/room';
+import { createThrottle } from '../utils/inputThrottle';
 import { TranslationKey, translate } from '../utils/i18n';
 import {
+  ACCENT_THEMES,
   AccentId,
   AppearanceMode,
   Language,
@@ -123,7 +126,7 @@ const INITIAL_STATE: RemoteAppState = {
   rooms: [],
   activeRoomId: null,
   favoritePackages: DEFAULT_APPS.map((app) => app.packageName),
-  tvBrand: 'Nikai',
+  tvBrand: 'Magic',
   tvCodeSet: 1,
   acBrand: 'Tosot',
   acCodeSet: 1,
@@ -148,7 +151,15 @@ interface MagicHardwareBridge {
   transmitIr?: (carrierFrequency: number, pattern: number[]) => Promise<boolean>;
   launchTvApp?: (packageName: string) => Promise<boolean>;
   hasIrEmitter?: () => Promise<boolean>;
-  startVoiceSearch?: () => Promise<string | boolean>;
+  runTvShellCommand?: (
+    ip: string,
+    port: number,
+    command: string,
+  ) => Promise<boolean>;
+  getTvDeviceIdentity?: (
+    ip: string,
+    port: number,
+  ) => Promise<{ name?: string; model?: string }>;
   sendBluetoothHidText?: (text: string) => Promise<boolean>;
   discoverNetworkDevices?: () => Promise<
     Array<{ name?: string; ip: string; port: number; source?: string }>
@@ -168,6 +179,7 @@ const MagicHardware: MagicHardwareBridge | undefined =
 
 const KEYCODE_MAP: Record<string, { androidKeyCode: number; label: string }> = {
   power: { androidKeyCode: 26, label: 'POWER' },
+  source: { androidKeyCode: 178, label: 'TV_INPUT' },
   sleep: { androidKeyCode: 223, label: 'SLEEP' },
   wakeup: { androidKeyCode: 224, label: 'WAKEUP' },
   up: { androidKeyCode: 19, label: 'DPAD_UP' },
@@ -179,6 +191,8 @@ const KEYCODE_MAP: Record<string, { androidKeyCode: number; label: string }> = {
   back: { androidKeyCode: 4, label: 'BACK' },
   home: { androidKeyCode: 3, label: 'HOME' },
   menu: { androidKeyCode: 82, label: 'MENU' },
+  pageUp: { androidKeyCode: 92, label: 'PAGE_UP' },
+  pageDown: { androidKeyCode: 93, label: 'PAGE_DOWN' },
   recents: { androidKeyCode: 187, label: 'APP_SWITCH' },
   volumeUp: { androidKeyCode: 24, label: 'VOLUME_UP' },
   volumeDown: { androidKeyCode: 25, label: 'VOLUME_DOWN' },
@@ -193,7 +207,7 @@ const KEYCODE_MAP: Record<string, { androidKeyCode: number; label: string }> = {
   prev: { androidKeyCode: 88, label: 'MEDIA_PREVIOUS' },
   fastForward: { androidKeyCode: 90, label: 'MEDIA_FAST_FORWARD' },
   rewind: { androidKeyCode: 89, label: 'MEDIA_REWIND' },
-  voice: { androidKeyCode: 219, label: 'VOICE_ASSIST' },
+  voice: { androidKeyCode: 231, label: 'VOICE_ASSIST' },
   search: { androidKeyCode: 84, label: 'SEARCH' },
   settings: { androidKeyCode: 176, label: 'SETTINGS' },
   info: { androidKeyCode: 165, label: 'INFO' },
@@ -218,6 +232,7 @@ const KEYCODE_MAP: Record<string, { androidKeyCode: number; label: string }> = {
 
 const ANDROID_TV_KEY_MAP: Record<string, RemoteKeyName> = {
   power: 'KEYCODE_POWER',
+  source: 'KEYCODE_TV_INPUT',
   mute: 'KEYCODE_VOLUME_MUTE',
   info: 'KEYCODE_INFO',
   up: 'KEYCODE_DPAD_UP',
@@ -231,6 +246,8 @@ const ANDROID_TV_KEY_MAP: Record<string, RemoteKeyName> = {
   del: 'KEYCODE_DEL',
   home: 'KEYCODE_HOME',
   menu: 'KEYCODE_MENU',
+  pageUp: 'KEYCODE_PAGE_UP',
+  pageDown: 'KEYCODE_PAGE_DOWN',
   recents: 'KEYCODE_APP_SWITCH',
   volumeUp: 'KEYCODE_VOLUME_UP',
   volumeDown: 'KEYCODE_VOLUME_DOWN',
@@ -281,16 +298,41 @@ function getSubnetPrefix(ip: string | null | undefined): string | null {
   return `${parts[0]}.${parts[1]}.${parts[2]}`;
 }
 
+const ROUTER_NAME_PATTERN =
+  /linux|\/upnp\/|upnp\/1\.0|router|gateway|openwrt|dd-wrt|ddwrt|busybox|access point|hotspot|modem/i;
+const TV_NAME_PATTERN =
+  /magic|a200|android\s*tv|smart\s*tv|leanback|bravia|webos|tizen|roku|chromecast|hisense|samsung|tcl|xiaomi|toshiba|sharp|philips|starsat|skyworth|tv\s*box|android\s*box/i;
+
+function isRouterishName(name?: string | null): boolean {
+  if (!name) return false;
+  return ROUTER_NAME_PATTERN.test(name);
+}
+
+function extractXmlValue(text: string, key: string): string {
+  const xml = new RegExp(`<[^>]*${key}[^>]*>([^<]+)<\\/[^>]*>`, 'i');
+  const json = new RegExp(`["']${key}["']\\s*:\\s*["']([^"']+)["']`, 'i');
+  return (
+    text.match(xml)?.[1]?.trim() ||
+    text.match(json)?.[1]?.trim() ||
+    ''
+  );
+}
+
 async function probeTvHost(
   ip: string,
   port: number,
   protocol: 'adb' | 'ws' | 'http',
   timeoutMs = 650,
-): Promise<{ reachable: boolean; name?: string; model?: string }> {
+): Promise<{
+  reachable: boolean;
+  name?: string;
+  model?: string;
+  port?: number;
+}> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const portsToCheck = Array.from(
-    new Set([port, 5555, 6467, 6466, 8090, 8008, 7676, 80]),
+    new Set([port, 5555, 6467, 6466, 8090, 8008, 8060, 7676, 80]),
   );
 
   try {
@@ -302,22 +344,30 @@ async function probeTvHost(
           signal: controller.signal,
         });
         const text = await res.text().catch(() => '');
-        const isMagic =
-          /magic|a200|android|tv|leanback|bravia|roku|chromecast|adb/i.test(text);
-        if (res.status > 0 || isMagic) {
-          clearTimeout(timer);
-          return {
-            reachable: true,
-            name: isMagic ? 'Magic A200 Pro TV' : `Network device (${ip})`,
-            model:
-              candidatePort === 5555
-                ? `ADB:${candidatePort} (${protocol.toUpperCase()})`
-                : `Port ${candidatePort}`,
-          };
+        const friendlyName =
+          extractXmlValue(text, 'friendlyName') ||
+          extractXmlValue(text, 'deviceName') ||
+          extractXmlValue(text, 'name');
+        const knownTvPort = [5555, 6467, 6466, 8090, 8008, 8060, 7676].includes(
+          candidatePort,
+        );
+        if (isRouterishName(friendlyName) || isRouterishName(text.slice(0, 600))) {
+          continue;
         }
-      } catch {
-        // Continue checking candidate ports
-      }
+        const looksLikeTv =
+          TV_NAME_PATTERN.test(friendlyName) ||
+          TV_NAME_PATTERN.test(text.slice(0, 4000));
+        if (!looksLikeTv && !knownTvPort) continue;
+        clearTimeout(timer);
+        const name =
+          friendlyName || (looksLikeTv ? `Android TV (${ip})` : `TV Box (${ip})`);
+        return {
+          reachable: true,
+          name,
+          model: `Port ${candidatePort} · ${protocol.toUpperCase()}`,
+          port: candidatePort,
+        };
+      } catch {}
     }
   } finally {
     clearTimeout(timer);
@@ -336,17 +386,6 @@ async function sendCommandToTv(
       const sent = await MagicHardware.sendBluetoothHidKey(String(payload.key ?? ''));
       if (sent) {
         return { ok: true, detail: `Bluetooth HID (${device.name})` };
-      }
-    } catch {
-      // Fallback to network attempt
-    }
-  }
-
-  if (MagicHardware?.sendIrKey && payload.type === 'key') {
-    try {
-      const irSent = await MagicHardware.sendIrKey(String(payload.key ?? ''));
-      if (irSent) {
-        return { ok: true, detail: `IR Emitter (${device.name})` };
       }
     } catch {
       // Fallback to network attempt
@@ -438,7 +477,8 @@ export default function MagicTvRemoteScreen() {
 
   const [screen, setScreen] = useState<'remote' | 'ac' | 'connection'>('remote');
   const [activeTab, setActiveTab] = useState<'remote' | 'mouse'>('remote');
-  const [airMode, setAirMode] = useState(false);
+  const [mouseMode, setMouseMode] = useState<RemoteMouseMode>('pointer');
+  const [scrollInverted, setScrollInverted] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<
     'disconnected' | 'connecting' | 'connected'
   >('disconnected');
@@ -458,6 +498,8 @@ export default function MagicTvRemoteScreen() {
   const [appsModalVisible, setAppsModalVisible] = useState(false);
   const [pairingModalVisible, setPairingModalVisible] = useState(false);
   const [pairingCode, setPairingCode] = useState('');
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [shareUrlInput, setShareUrlInput] = useState('');
 
   const [manualName, setManualName] = useState('Magic A200 Pro');
   const [manualIp, setManualIp] = useState('');
@@ -484,6 +526,10 @@ export default function MagicTvRemoteScreen() {
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keyThrottleRef = useRef(createThrottle(40));
+  const mouseMoveThrottleRef = useRef(createThrottle(30));
+  const mouseScrollThrottleRef = useRef(createThrottle(30));
+  const airMoveThrottleRef = useRef(createThrottle(30));
   const [feedback, setFeedback] = useState('');
   const showFeedback = useCallback((msg: string) => {
     setFeedback(msg);
@@ -499,6 +545,25 @@ export default function MagicTvRemoteScreen() {
     () => state.devices.find((d) => d.id === state.activeDeviceId) ?? null,
     [state.devices, state.activeDeviceId],
   );
+
+  const resolveDeviceIdentity = useCallback(async (dev: SavedDevice) => {
+    if (dev.transport !== 'wifi') return null;
+    const native = await MagicHardware?.getTvDeviceIdentity?.(
+      dev.ip,
+      dev.port || 5555,
+    ).catch(() => null);
+    const networkName = native?.name;
+    const probe = networkName
+      ? null
+      : await probeTvHost(dev.ip, dev.port || 5555, 'adb', 900).catch(() => ({
+          reachable: false,
+          name: undefined,
+          model: undefined,
+        }));
+    const name = networkName || probe?.name;
+    if (!name || isRouterishName(name)) return null;
+    return { name, model: native?.model || probe?.model };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -617,9 +682,32 @@ export default function MagicTvRemoteScreen() {
       setConnectionStatus('connecting');
       const ok = await tvRemote.connect(dev.ip);
       setConnectionStatus(ok ? 'connecting' : 'disconnected');
-      showFeedback(ok ? t('connecting') : tvRemote.error);
+      if (ok) {
+        const identity = await resolveDeviceIdentity(dev);
+        if (identity) {
+          setState((prev) => ({
+            ...prev,
+            devices: prev.devices.map((item) =>
+              item.id === dev.id
+                ? { ...item, name: identity.name, model: identity.model ?? item.model }
+                : item,
+            ),
+          }));
+          showFeedback(`${t('connected')} · ${identity.name}`);
+        } else {
+          showFeedback(t('connecting'));
+        }
+      } else {
+        showFeedback(tvRemote.error);
+      }
     },
-    [requestBluetoothPermissions, showFeedback, t, tvRemote.connect],
+    [
+      requestBluetoothPermissions,
+      resolveDeviceIdentity,
+      showFeedback,
+      t,
+      tvRemote.connect,
+    ],
   );
 
   useEffect(() => {
@@ -629,24 +717,68 @@ export default function MagicTvRemoteScreen() {
     connectToDevice(last);
   }, [hydrated, state.autoConnect, state.activeDeviceId, state.devices, connectToDevice]);
 
+  const sendTvShellCommand = useCallback(
+    async (command: string, timeoutMs = 1200): Promise<boolean> => {
+      if (!activeDevice || activeDevice.transport !== 'wifi') return false;
+      try {
+        const native = await MagicHardware?.runTvShellCommand?.(
+          activeDevice.ip,
+          activeDevice.port || 5555,
+          command,
+        );
+        if (native) return true;
+      } catch {}
+      const result = await sendCommandToTv(
+        activeDevice,
+        { type: 'shell', command },
+        timeoutMs,
+      ).catch(() => ({ ok: false, detail: '' }));
+      return result.ok;
+    },
+    [activeDevice],
+  );
+
   const handleSendKey = useCallback(
-    (key: string) => {
+    async (key: string): Promise<boolean> => {
+      if (!keyThrottleRef.current()) return false;
       tap();
+      let sent = false;
+
       if (activeDevice?.transport === 'wifi' && tvRemote.isConnected) {
-        const keyName = ANDROID_TV_KEY_MAP[key];
-        if (key === 'power') tvRemote.sendPower();
-        else if (keyName) tvRemote.sendKey(keyName);
-        return;
+        if (key === 'power') {
+          sent = tvRemote.sendPower();
+        } else {
+          const keyName = ANDROID_TV_KEY_MAP[key];
+          if (keyName) sent = tvRemote.sendKey(keyName);
+        }
       }
-      if (activeDevice) {
-        sendCommandToTv(activeDevice, { type: 'key', key }, 200).catch(() => {});
-        return;
+
+      if (!sent && activeDevice) {
+        const result = await sendCommandToTv(
+          activeDevice,
+          { type: 'key', key, androidKeyCode: KEYCODE_MAP[key]?.androidKeyCode },
+          200,
+        ).catch(() => ({ ok: false, detail: '' }));
+        sent = result.ok;
       }
-      const ir = buildTvIrPattern(state.tvBrand, state.tvCodeSet, key);
-      MagicHardware?.transmitIr?.(ir.carrierFrequency, ir.pattern).catch(() => {});
+
+      if (!sent && key === 'settings') {
+        sent = await sendTvShellCommand('am start -a android.settings.SETTINGS');
+      }
+
+      if (!sent && MagicHardware?.transmitIr) {
+        const ir = buildTvIrPattern(state.tvBrand, state.tvCodeSet, key);
+        try {
+          sent = await MagicHardware.transmitIr(ir.carrierFrequency, ir.pattern);
+        } catch {
+          sent = false;
+        }
+      }
+      return sent;
     },
     [
       activeDevice,
+      sendTvShellCommand,
       state.tvBrand,
       state.tvCodeSet,
       tap,
@@ -658,27 +790,49 @@ export default function MagicTvRemoteScreen() {
 
   const handleLaunchApp = useCallback(
     async (pkg: string) => {
-      if (MagicHardware?.launchTvApp) {
-        try {
-          const launched = await MagicHardware.launchTvApp(pkg);
-          if (launched) {
-            showFeedback(`${t('appLaunched')}: ${pkg}`);
-            return;
-          }
-        } catch {
-          // Fall back to the network protocol.
-        }
+      if (!/^[A-Za-z0-9_.]+$/.test(pkg)) {
+        showFeedback(t('invalidPackage'));
+        return;
       }
-      if (activeDevice) {
-        await sendCommandToTv(
+      let launched = false;
+      if (activeDevice?.transport === 'wifi') {
+        launched = await sendTvShellCommand(
+          `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`,
+        );
+      }
+      if (!launched && activeDevice) {
+        const result = await sendCommandToTv(
           activeDevice,
           { type: 'launch_app', packageName: pkg },
           300,
-        ).catch(() => {});
+        ).catch(() => ({ ok: false }));
+        launched = result.ok;
       }
+      if (!launched && MagicHardware?.launchTvApp) {
+        launched = await MagicHardware.launchTvApp(pkg).catch(() => false);
+      }
+      showFeedback(launched ? `${t('appLaunched')}: ${pkg}` : t('appsFetchFailed'));
     },
-    [activeDevice, showFeedback, t],
+    [activeDevice, sendTvShellCommand, showFeedback, t],
   );
+
+  const handleOpenTvUrl = useCallback(async () => {
+    const url = shareUrlInput.trim();
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      showFeedback(t('invalidUrl'));
+      return;
+    }
+    const escaped = url.replace(/'/g, `'\\''`);
+    const opened = await sendTvShellCommand(
+      `am start -a android.intent.action.VIEW -d '${escaped}'`,
+    );
+    showFeedback(opened ? `${t('openLink')}: ${url}` : t('textFailed'));
+    if (opened) {
+      setShareUrlInput('');
+      setShareModalVisible(false);
+      Keyboard.dismiss();
+    }
+  }, [sendTvShellCommand, shareUrlInput, showFeedback, t]);
 
   const handleSendAcIr = useCallback(
     async (brand: AcBrand, acState: AcState, codeSet: AcCodeSet = 1) => {
@@ -715,52 +869,27 @@ export default function MagicTvRemoteScreen() {
       }
     }
     if (!sent && activeDevice) {
-      const result = await sendCommandToTv(
-        activeDevice,
-        { type: 'text', text },
-        400,
-      ).catch(() => ({ ok: false, detail: '' }));
-      sent = result.ok;
+      const shellText = text
+        .replace(/\r?\n/g, '%s')
+        .replace(/ /g, '%s')
+        .replace(/'/g, `'\\''`);
+      sent = await sendTvShellCommand(`input text '${shellText}'`, 600);
     }
     setSendingText(false);
     showFeedback(sent ? `${t('textSent')}: ${text}` : t('textFailed'));
     if (sent) {
+      await handleSendKey('enter');
       setTvTextInput('');
       Keyboard.dismiss();
       setTextModalVisible(false);
     }
-  }, [activeDevice, showFeedback, t, tvTextInput]);
+  }, [activeDevice, handleSendKey, sendTvShellCommand, showFeedback, t, tvTextInput]);
 
   const handleVoiceSearch = useCallback(async () => {
-    if (!MagicHardware?.startVoiceSearch) {
-      showFeedback(t('voiceUnavailable'));
-      return;
-    }
-    try {
-      const result = await MagicHardware.startVoiceSearch();
-      const text = typeof result === 'string' ? result : '';
-      if (text) {
-        setTvTextInput(text);
-        showFeedback(`${t('voiceRecognized')}: ${text}`);
-        if (activeDevice) {
-          if (
-            activeDevice.transport === 'bluetooth' &&
-            MagicHardware.sendBluetoothHidText
-          ) {
-            await MagicHardware.sendBluetoothHidText(text).catch(() => false);
-          } else {
-            await sendCommandToTv(activeDevice, { type: 'text', text }, 400).catch(
-              () => {},
-            );
-          }
-        }
-      } else {
-        showFeedback(t('voiceNoResult'));
-      }
-    } catch {
-      showFeedback(t('voiceUnavailable'));
-    }
-  }, [activeDevice, showFeedback, t]);
+    tap();
+    const voiceSent = await handleSendKey('voice');
+    if (!voiceSent) await handleSendKey('search');
+  }, [handleSendKey, tap]);
 
   useEffect(() => {
     let mounted = true;
@@ -823,6 +952,7 @@ export default function MagicTvRemoteScreen() {
 
   const handleTouchpadDelta = useCallback(
     (dx: number, dy: number) => {
+      if (!mouseMoveThrottleRef.current()) return;
       const scaledX = Math.round(dx * state.mouseSensitivity);
       const scaledY = Math.round(dy * state.mouseSensitivity);
       setPointerStatus(`${t('mouse')} (${scaledX}, ${scaledY})`);
@@ -849,6 +979,7 @@ export default function MagicTvRemoteScreen() {
 
   const handleScroll = useCallback(
     (deltaY: number) => {
+      if (!mouseScrollThrottleRef.current()) return;
       if (MagicHardware?.sendMouseScroll) {
         MagicHardware.sendMouseScroll(deltaY).catch(() => {});
       }
@@ -893,30 +1024,56 @@ export default function MagicTvRemoteScreen() {
   }, [t, tap]);
 
   const handleSetMouseMode = useCallback(
-    (mode: 'touchpad' | 'air') => {
+    (mode: RemoteMouseMode) => {
       if (mode === 'air' && !airSupported) {
         showFeedback(t('airUnavailable'));
         return;
       }
       tap();
-      setAirMode(mode === 'air');
+      setMouseMode(mode);
       setAirStatus(mode === 'air' ? t('airMouse') : t('airOff'));
-      showFeedback(mode === 'air' ? t('airOn') : t('airOff'));
+      showFeedback(
+        mode === 'air' ? t('airOn') : mode === 'swipe' ? t('swipeMode') : t('pointerMode'),
+      );
     },
     [airSupported, showFeedback, t, tap],
   );
 
+  const handleMouseSwipe = useCallback(
+    (direction: 'up' | 'down' | 'left' | 'right') => {
+      const key =
+        direction === 'up'
+          ? 'up'
+          : direction === 'down'
+            ? 'down'
+            : direction === 'left'
+              ? 'left'
+              : 'right';
+      handleSendKey(key);
+    },
+    [handleSendKey],
+  );
+
+  const handleMouseConfirm = useCallback(() => {
+    handleSendKey('ok');
+  }, [handleSendKey]);
+
+  const handleToggleScrollInverted = useCallback(() => {
+    tap();
+    setScrollInverted((value) => !value);
+  }, [tap]);
+
   const mouseController: RemoteMouseController = useMemo(
     () => ({
-      mode: airMode ? 'air' : 'touchpad',
+      mode: mouseMode,
       setMode: handleSetMouseMode,
       pointerSupported,
       airSupported,
       pointerStatus,
       airStatus,
       sensitivity: state.mouseSensitivity,
-      setSensitivity: (val) =>
-        setState((prev) => ({ ...prev, mouseSensitivity: val })),
+      scrollInverted,
+      onToggleScrollInverted: handleToggleScrollInverted,
       onTouchpadDelta: handleTouchpadDelta,
       onTouchpadPress: handleTouchpadPress,
       onRightClick: handleRightClick,
@@ -924,9 +1081,13 @@ export default function MagicTvRemoteScreen() {
       onScroll: handleScroll,
       onDragStart: handleDragStart,
       onDragEnd: handleDragEnd,
+      onSwipe: handleMouseSwipe,
+      onConfirm: handleMouseConfirm,
     }),
     [
-      airMode,
+      mouseMode,
+      scrollInverted,
+      handleToggleScrollInverted,
       handleSetMouseMode,
       pointerSupported,
       airSupported,
@@ -940,14 +1101,16 @@ export default function MagicTvRemoteScreen() {
       handleScroll,
       handleDragStart,
       handleDragEnd,
+      handleMouseSwipe,
+      handleMouseConfirm,
     ],
   );
   useEffect(() => {
-    if (!airMode || !airSupported) return;
+    if (mouseMode !== 'air' || !airSupported) return;
     let mounted = true;
     Gyroscope.setUpdateInterval(60);
     const subscription = Gyroscope.addListener(({ x, y }) => {
-      if (!mounted) return;
+      if (!mounted || !airMoveThrottleRef.current()) return;
       const scale = state.mouseSensitivity * 5;
       const dx = Math.round(-y * scale);
       const dy = Math.round(x * scale);
@@ -959,7 +1122,7 @@ export default function MagicTvRemoteScreen() {
       mounted = false;
       subscription.remove();
     };
-  }, [airMode, airSupported, handleTouchpadDelta, state.mouseSensitivity]);
+  }, [mouseMode, airSupported, handleTouchpadDelta, state.mouseSensitivity]);
 
   const handleScanNetwork = useCallback(async () => {
     setScanning(true);
@@ -969,22 +1132,42 @@ export default function MagicTvRemoteScreen() {
     try {
       const found: SavedDevice[] = [];
       const seen = new Set<string>();
+      const localIp = await Network.getIpAddressAsync().catch(() => null);
+      const prefix = getSubnetPrefix(localIp) ?? '192.168.1';
+      const gateway = `${prefix}.1`;
 
       if (MagicHardware?.discoverNetworkDevices) {
         try {
           const nativeDevices = await MagicHardware.discoverNetworkDevices();
           for (const item of nativeDevices ?? []) {
-            if (!isValidIpv4(item.ip) || seen.has(item.ip)) continue;
+            const reportedName = item.name?.trim() ?? '';
+            if (
+              !isValidIpv4(item.ip) ||
+              item.ip === gateway ||
+              isRouterishName(reportedName) ||
+              seen.has(item.ip)
+            ) {
+              continue;
+            }
             seen.add(item.ip);
+            const port = Number(item.port) || 5555;
+            const identity = await resolveDeviceIdentity({
+              id: 'pending',
+              name: reportedName,
+              ip: item.ip,
+              port,
+              protocol: 'http',
+              transport: 'wifi',
+            });
             found.push({
               id: `discover-${item.ip}-${Date.now()}-${found.length}`,
-              name: item.name?.trim() || `Magic TV (${item.ip})`,
+              name: identity?.name || reportedName || `Android TV (${item.ip})`,
               ip: item.ip,
-              port: Number(item.port) || 5555,
+              port,
               protocol: 'http',
               transport: 'wifi',
               source: item.source ?? 'mDNS/SSDP',
-              model: item.source,
+              model: identity?.model ?? item.source,
               lastSeen: `${t('discoveredVia')} ${item.source ?? t('networkSource')}`,
             });
           }
@@ -999,8 +1182,6 @@ export default function MagicTvRemoteScreen() {
         }
       }
 
-      const ipAddress = await Network.getIpAddressAsync().catch(() => null);
-      const prefix = getSubnetPrefix(ipAddress) ?? '192.168.1';
       const candidates: string[] = [];
 
       const seedHosts = [1, 2, 10, 20, 50, 100, 101, 102, 110, 150, 200, 254];
@@ -1019,7 +1200,7 @@ export default function MagicTvRemoteScreen() {
       for (let i = 0; i < candidates.length; i += batchSize) {
         const batch = candidates
           .slice(i, i + batchSize)
-          .filter((ip) => !seen.has(ip));
+          .filter((ip) => ip !== gateway && !seen.has(ip));
         if (batch.length === 0) continue;
         setScanProgressText(
           `${t('scanningSubnet')} ${prefix}.x (${Math.min(i + batchSize, candidates.length)}/${candidates.length})...`,
@@ -1037,9 +1218,11 @@ export default function MagicTvRemoteScreen() {
             seen.add(item.ip);
             found.push({
               id: `scan-${item.ip}-${Date.now()}-${found.length}`,
-              name: item.res.name ?? `Magic TV (${item.ip})`,
+              name: item.res.name && !isRouterishName(item.res.name)
+                ? item.res.name
+                : `Android TV (${item.ip})`,
               ip: item.ip,
-              port: 5555,
+              port: item.res.port ?? 5555,
               protocol: 'adb',
               transport: 'wifi',
               model: item.res.model,
@@ -1061,7 +1244,7 @@ export default function MagicTvRemoteScreen() {
     } finally {
       setScanning(false);
     }
-  }, [t]);
+  }, [resolveDeviceIdentity, t]);
 
   const handleScanBluetooth = useCallback(async () => {
     setBtScanning(true);
@@ -1074,11 +1257,13 @@ export default function MagicTvRemoteScreen() {
       if (MagicHardware?.scanBluetoothDevices) {
         const list = await MagicHardware.scanBluetoothDevices();
         setBtDevices(
-          (list ?? []).map((item, idx) => ({
-            name: item.name?.trim() || `BT Device ${idx + 1}`,
-            address: item.address?.trim() || `00:11:22:33:44:${(idx + 10).toString(16)}`,
-            bondState: item.bondState,
-          })),
+          (list ?? [])
+            .filter((item) => Boolean(item.address?.trim()))
+            .map((item, idx) => ({
+              name: item.name?.trim() || `BT Device ${idx + 1}`,
+              address: item.address!.trim(),
+              bondState: item.bondState,
+            })),
         );
       } else {
         setBtDevices([]);
@@ -1092,23 +1277,64 @@ export default function MagicTvRemoteScreen() {
     }
   }, [requestBluetoothPermissions, t]);
 
-  const handleSaveManualDevice = useCallback(() => {
+  const handleSaveManualDevice = useCallback(async () => {
     const cleanIp = manualIp.trim();
     const parsedPort = Number(manualPort.trim()) || 5555;
+    const cleanMac = manualBtMac.trim().toUpperCase();
 
     if (manualTransport === 'wifi' && !isValidIpv4(cleanIp)) {
       Alert.alert(t('invalidIp'), t('invalidIpHelp'));
       return;
     }
+    if (parsedPort < 1 || parsedPort > 65535) {
+      Alert.alert(t('invalidPort'), t('invalidPortHelp'));
+      return;
+    }
+    if (
+      manualTransport === 'bluetooth' &&
+      !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(cleanMac)
+    ) {
+      Alert.alert(t('invalidMac'), t('invalidMacHelp'));
+      return;
+    }
+
+    const duplicate = state.devices.find((device) =>
+      manualTransport === 'bluetooth'
+        ? device.bluetoothMac?.toUpperCase() === cleanMac
+        : device.ip === cleanIp && device.port === parsedPort,
+    );
+    if (duplicate) {
+      setDeviceModalVisible(false);
+      connectToDevice(duplicate);
+      return;
+    }
+
+    let name = manualName.trim() || 'Magic A200 Pro';
+    let model: string | undefined;
+    if (manualTransport === 'wifi') {
+      const identity = await resolveDeviceIdentity({
+        id: 'pending',
+        name,
+        ip: cleanIp,
+        port: parsedPort,
+        protocol: manualProtocol,
+        transport: 'wifi',
+      });
+      if (identity) {
+        name = identity.name;
+        model = identity.model;
+      }
+    }
 
     const newDevice: SavedDevice = {
       id: `dev-${Date.now()}`,
-      name: manualName.trim() || 'Magic A200 Pro',
+      name,
       ip: manualTransport === 'wifi' ? cleanIp : '0.0.0.0',
       port: parsedPort,
       protocol: manualProtocol,
       transport: manualTransport,
-      bluetoothMac: manualTransport === 'bluetooth' ? manualBtMac.trim() : undefined,
+      bluetoothMac: manualTransport === 'bluetooth' ? cleanMac : undefined,
+      model,
       lastSeen: t('addedRecently'),
     };
 
@@ -1121,37 +1347,40 @@ export default function MagicTvRemoteScreen() {
     setDeviceModalVisible(false);
     connectToDevice(newDevice);
   }, [
-    manualName,
+    connectToDevice,
+    manualBtMac,
     manualIp,
+    manualName,
     manualPort,
     manualProtocol,
     manualTransport,
-    manualBtMac,
-    connectToDevice,
+    resolveDeviceIdentity,
+    state.devices,
     t,
   ]);
 
   const handleAddDiscoveredDevice = useCallback(
     (dev: SavedDevice) => {
-      setState((prev) => {
-        const exists = prev.devices.some(
-          (d) => d.ip === dev.ip && d.port === dev.port,
-        );
-        const updated = exists
-          ? prev.devices.map((d) =>
-              d.ip === dev.ip && d.port === dev.port ? { ...d, ...dev } : d,
+      const match = state.devices.find((item) =>
+        dev.transport === 'bluetooth'
+          ? Boolean(dev.bluetoothMac) &&
+            item.bluetoothMac?.toUpperCase() === dev.bluetoothMac?.toUpperCase()
+          : item.ip === dev.ip && item.port === dev.port,
+      );
+      const stored = match ?? dev;
+      setState((prev) => ({
+        ...prev,
+        devices: match
+          ? prev.devices.map((item) =>
+              item.id === match.id ? { ...item, ...dev, id: match.id } : item,
             )
-          : [dev, ...prev.devices];
-        return {
-          ...prev,
-          devices: updated,
-          activeDeviceId: dev.id,
-        };
-      });
+          : [dev, ...prev.devices],
+        activeDeviceId: stored.id,
+      }));
       setDeviceModalVisible(false);
-      connectToDevice(dev);
+      connectToDevice(stored);
     },
-    [connectToDevice],
+    [connectToDevice, state.devices],
   );
 
   const handleRemoveDevice = useCallback((deviceId: string) => {
@@ -1194,13 +1423,14 @@ export default function MagicTvRemoteScreen() {
   }, [newAppName, newAppPackage, t]);
 
   const handleFetchInstalledApps = useCallback(async () => {
+    if (!activeDevice) {
+      showFeedback(t('appsFetchFailed'));
+      return;
+    }
     setFetchingApps(true);
     try {
       let packages: string[] = [];
-      if (
-        activeDevice?.transport === 'wifi' &&
-        MagicHardware?.getInstalledTvAppsFromHost
-      ) {
+      if (activeDevice.transport === 'wifi' && MagicHardware?.getInstalledTvAppsFromHost) {
         packages = await MagicHardware.getInstalledTvAppsFromHost(
           activeDevice.ip,
           activeDevice.port || 5555,
@@ -1226,16 +1456,6 @@ export default function MagicTvRemoteScreen() {
       setFetchingApps(false);
     }
   }, [activeDevice, showFeedback, t]);
-
-  const handleQuickPaste = useCallback(async () => {
-    const text = await MagicHardware?.getClipboardText?.().catch(() => '');
-    if (!text) {
-      showFeedback(t('clipboardEmpty'));
-      return;
-    }
-    setTvTextInput(text);
-    setTextModalVisible(true);
-  }, [showFeedback, t]);
 
   const handleToggleFavorite = useCallback((pkg: string) => {
     setState((prev) => ({
@@ -1351,42 +1571,7 @@ export default function MagicTvRemoteScreen() {
 
         <View style={styles.headerActions}>
           <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('keyboard')}
-            onPress={() => setTextModalVisible(true)}
-            style={[
-              styles.iconButton,
-              { backgroundColor: colors.cardAlt, borderColor: colors.border },
-            ]}
-          >
-            <Ionicons name="keypad-outline" size={18} color={accent} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('apps')}
-            onPress={() => setAppsModalVisible(true)}
-            style={[
-              styles.iconButton,
-              { backgroundColor: colors.cardAlt, borderColor: colors.border },
-            ]}
-          >
-            <Ionicons name="apps-outline" size={18} color={accent} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('connection')}
-            onPress={() => setDeviceModalVisible(true)}
-            style={[
-              styles.iconButton,
-              { backgroundColor: colors.cardAlt, borderColor: colors.border },
-            ]}
-          >
-            <Ionicons name="tv-outline" size={18} color={accent} />
-          </Pressable>
-
-          <Pressable
+      onPressIn={tap}
             accessibilityRole="button"
             accessibilityLabel={t('settings')}
             onPress={() => setSettingsModalVisible(true)}
@@ -1395,8 +1580,26 @@ export default function MagicTvRemoteScreen() {
               { backgroundColor: colors.cardAlt, borderColor: colors.border },
             ]}
           >
-            <Ionicons name="settings-outline" size={18} color={colors.text} />
+            <Ionicons name="settings-outline" size={19} color={accent} />
           </Pressable>
+
+          {connectionStatus === 'connected' && activeDevice ? (
+            <Pressable
+      onPressIn={tap}
+              accessibilityRole="button"
+              accessibilityLabel={t('apps')}
+              onPress={handleFetchInstalledApps}
+              style={[
+                styles.iconButton,
+                {
+                  backgroundColor: colors.accentSoft,
+                  borderColor: accent,
+                },
+              ]}
+            >
+              <Ionicons name="add-outline" size={21} color={accent} />
+            </Pressable>
+          ) : null}
         </View>
       </View>
 
@@ -1425,24 +1628,26 @@ export default function MagicTvRemoteScreen() {
             activeTab={activeTab}
             onTabChange={setActiveTab}
             onSendKey={handleSendKey}
-            onOpenSettings={() => setSettingsModalVisible(true)}
             onOpenKeyboard={() => setTextModalVisible(true)}
-            onOpenApps={() => setAppsModalVisible(true)}
-            onQuickPaste={handleQuickPaste}
+            onOpenApps={handleFetchInstalledApps}
             onVoiceSearch={handleVoiceSearch}
+            onTvSettings={() => {
+              void handleSendKey('settings');
+            }}
+            onOpenShare={() => setShareModalVisible(true)}
             t={t}
             colors={colors}
             isConnected={connectionStatus === 'connected'}
-            apps={state.customApps.filter((app) =>
-              state.favoritePackages.includes(app.packageName),
-            )}
-            onLaunchApp={handleLaunchApp}
+            deviceName={activeDevice?.name ?? 'Magic A200 Pro'}
             mouse={mouseController}
+            onPressFeedback={tap}
           />
         ) : screen === 'ac' ? (
           <AcPanel
             colors={colors}
             t={t}
+            language={state.language}
+            onPressFeedback={tap}
             onSendIr={handleSendAcIr}
             onStateChange={handleAcStateChange}
             initialBrand={state.acBrand}
@@ -1455,6 +1660,8 @@ export default function MagicTvRemoteScreen() {
           <ConnectionPanel
             colors={colors}
             t={t}
+            language={state.language}
+            onPressFeedback={tap}
             devices={state.devices}
             activeDeviceId={state.activeDeviceId}
             connectionStatus={connectionStatus}
@@ -1466,13 +1673,6 @@ export default function MagicTvRemoteScreen() {
             irMissing={irMissing}
             pointerSupported={pointerSupported}
             airSupported={airSupported}
-            hapticsEnabled={state.hapticsEnabled}
-            autoConnect={state.autoConnect}
-            keepAwake={state.keepAwake}
-            sensitivity={state.mouseSensitivity}
-            language={state.language}
-            appearance={state.appearance}
-            accentId={state.accent}
             rooms={state.rooms}
             activeRoomId={state.activeRoomId}
             tvBrand={state.tvBrand}
@@ -1491,33 +1691,13 @@ export default function MagicTvRemoteScreen() {
             onScanNetwork={handleScanNetwork}
             onScanBluetooth={handleScanBluetooth}
             onOpenManual={() => setDeviceModalVisible(true)}
-            onToggleHaptics={() =>
-              setState((prev) => ({ ...prev, hapticsEnabled: !prev.hapticsEnabled }))
-            }
-            onToggleAutoConnect={() =>
-              setState((prev) => ({ ...prev, autoConnect: !prev.autoConnect }))
-            }
-            onToggleKeepAwake={() =>
-              setState((prev) => ({ ...prev, keepAwake: !prev.keepAwake }))
-            }
-            onSensitivityChange={(value) =>
-              setState((prev) => ({ ...prev, mouseSensitivity: value }))
-            }
-            onLanguageChange={(language) =>
-              setState((prev) => ({ ...prev, language }))
-            }
-            onAppearanceChange={(appearance) =>
-              setState((prev) => ({ ...prev, appearance }))
-            }
-            onAccentChange={(accentId) =>
-              setState((prev) => ({ ...prev, accent: accentId }))
-            }
             onSaveRoom={handleSaveRoom}
             onActivateRoom={handleActivateRoom}
             onDeleteRoom={(id) =>
               setState((prev) => ({
                 ...prev,
                 rooms: prev.rooms.filter((room) => room.id !== id),
+                activeRoomId: prev.activeRoomId === id ? null : prev.activeRoomId,
               }))
             }
             onTvBrandChange={(brand) =>
@@ -1541,6 +1721,7 @@ export default function MagicTvRemoteScreen() {
         ]}
       >
         <Pressable
+      onPressIn={tap}
           accessibilityRole="button"
           accessibilityState={{ selected: screen === 'remote' }}
           onPress={() => setScreen('remote')}
@@ -1561,6 +1742,7 @@ export default function MagicTvRemoteScreen() {
           </Text>
         </Pressable>
         <Pressable
+      onPressIn={tap}
           accessibilityRole="button"
           accessibilityState={{ selected: screen === 'ac' }}
           onPress={() => setScreen('ac')}
@@ -1581,6 +1763,7 @@ export default function MagicTvRemoteScreen() {
           </Text>
         </Pressable>
         <Pressable
+      onPressIn={tap}
           accessibilityRole="button"
           accessibilityState={{ selected: screen === 'connection' }}
           onPress={() => setScreen('connection')}
@@ -1619,7 +1802,7 @@ export default function MagicTvRemoteScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 {t('connectionTitle')}
               </Text>
-              <Pressable onPress={() => setDeviceModalVisible(false)}>
+              <Pressable onPressIn={tap} onPress={() => setDeviceModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
             </View>
@@ -1652,6 +1835,7 @@ export default function MagicTvRemoteScreen() {
                       ]}
                     >
                       <Pressable
+      onPressIn={tap}
                         style={styles.deviceRowMain}
                         onPress={() => {
                           setDeviceModalVisible(false);
@@ -1668,6 +1852,7 @@ export default function MagicTvRemoteScreen() {
                         </Text>
                       </Pressable>
                       <Pressable
+      onPressIn={tap}
                         onPress={() => handleRemoveDevice(dev.id)}
                         style={styles.deleteBtn}
                       >
@@ -1680,6 +1865,7 @@ export default function MagicTvRemoteScreen() {
 
               <View style={styles.scanActionsRow}>
                 <Pressable
+      onPressIn={tap}
                   onPress={handleScanNetwork}
                   disabled={scanning}
                   style={[styles.primaryActionBtn, { backgroundColor: accent }]}
@@ -1695,6 +1881,7 @@ export default function MagicTvRemoteScreen() {
                 </Pressable>
 
                 <Pressable
+      onPressIn={tap}
                   onPress={handleScanBluetooth}
                   disabled={btScanning}
                   style={[
@@ -1721,6 +1908,7 @@ export default function MagicTvRemoteScreen() {
 
               {discoveredDevices.map((item) => (
                 <Pressable
+      onPressIn={tap}
                   key={item.id}
                   onPress={() => handleAddDiscoveredDevice(item)}
                   style={[
@@ -1742,6 +1930,7 @@ export default function MagicTvRemoteScreen() {
 
               {btDevices.map((bt) => (
                 <Pressable
+      onPressIn={tap}
                   key={bt.address}
                   onPress={() => {
                     const btDev: SavedDevice = {
@@ -1795,6 +1984,7 @@ export default function MagicTvRemoteScreen() {
               <View style={styles.transportRow}>
                 {(['wifi', 'bluetooth'] as const).map((transport) => (
                   <Pressable
+      onPressIn={tap}
                     key={transport}
                     onPress={() => setManualTransport(transport)}
                     style={[
@@ -1879,6 +2069,7 @@ export default function MagicTvRemoteScreen() {
               </Text>
               {TV_BOXES.map((box) => (
                 <Pressable
+      onPressIn={tap}
                   key={box.id}
                   onPress={() => {
                     setManualName(box.name);
@@ -1909,6 +2100,7 @@ export default function MagicTvRemoteScreen() {
               ))}
 
               <Pressable
+      onPressIn={tap}
                 onPress={handleSaveManualDevice}
                 style={[styles.primaryActionBtn, { backgroundColor: accent }]}
               >
@@ -1922,9 +2114,90 @@ export default function MagicTvRemoteScreen() {
 
       <Modal
         visible={textModalVisible}
-        animationType="fade"
+        animationType="slide"
         transparent
         onRequestClose={() => setTextModalVisible(false)}
+      >
+        <View style={styles.fullScreenModal}>
+          <View style={styles.fullScreenHeader}>
+            <Text style={[styles.fullScreenTitle, { color: accent }]}>
+              {t('textTitle')}
+            </Text>
+            <Pressable
+      onPressIn={tap}
+              accessibilityRole="button"
+              accessibilityLabel={t('cancel')}
+              onPress={() => {
+                Keyboard.dismiss();
+                setTextModalVisible(false);
+              }}
+            >
+              <Ionicons name="close" size={30} color={accent} />
+            </Pressable>
+          </View>
+
+          <TextInput
+            value={tvTextInput}
+            onChangeText={setTvTextInput}
+            placeholder={t('textPlaceholder')}
+            placeholderTextColor="#5F7D73"
+            autoFocus
+            multiline
+            returnKeyType="send"
+            onSubmitEditing={() => {
+              void handleSendTvText();
+            }}
+            style={[
+              styles.fullScreenInput,
+              {
+                borderColor: accent,
+                color: '#E9FFF7',
+              },
+            ]}
+          />
+
+          <Text style={[styles.fullScreenHint, { color: accent }]}>
+            {t('textPlaceholder')}
+          </Text>
+
+          <View style={styles.modalFooterRow}>
+            <Pressable
+      onPressIn={tap}
+              onPress={() => {
+                Keyboard.dismiss();
+                setTextModalVisible(false);
+              }}
+              style={[
+                styles.secondaryActionBtn,
+                { backgroundColor: '#0C1714', borderColor: accent },
+              ]}
+            >
+              <Text style={[styles.secondaryActionText, { color: accent }]}>
+                {t('cancel')}
+              </Text>
+            </Pressable>
+
+            <Pressable
+      onPressIn={tap}
+              onPress={() => {
+                void handleSendTvText();
+              }}
+              disabled={sendingText}
+              style={[styles.primaryActionBtn, { backgroundColor: accent }]}
+            >
+              <Text style={styles.primaryActionText}>
+                {sendingText ? t('sending') : t('sendText')}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={shareModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShareModalVisible(false)}
       >
         <View style={styles.modalBackdrop}>
           <View
@@ -1935,19 +2208,37 @@ export default function MagicTvRemoteScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                {t('textTitle')}
+                {t('share')}
               </Text>
-              <Pressable onPress={() => setTextModalVisible(false)}>
+              <Pressable
+      onPressIn={tap}
+                accessibilityRole="button"
+                accessibilityLabel={t('cancel')}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setShareModalVisible(false);
+                }}
+              >
                 <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
             </View>
 
+            <Text style={[styles.emptyHint, { color: colors.secondary }]}>
+              {t('shareHelp')}
+            </Text>
+
             <TextInput
-              value={tvTextInput}
-              onChangeText={setTvTextInput}
-              placeholder={t('textPlaceholder')}
+              value={shareUrlInput}
+              onChangeText={setShareUrlInput}
+              placeholder={t('urlPlaceholder')}
               placeholderTextColor={colors.secondary}
               autoFocus
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              onSubmitEditing={() => {
+                void handleOpenTvUrl();
+              }}
               style={[
                 styles.inputField,
                 {
@@ -1960,9 +2251,10 @@ export default function MagicTvRemoteScreen() {
 
             <View style={styles.modalFooterRow}>
               <Pressable
+      onPressIn={tap}
                 onPress={() => {
                   Keyboard.dismiss();
-                  setTextModalVisible(false);
+                  setShareModalVisible(false);
                 }}
                 style={[
                   styles.secondaryActionBtn,
@@ -1975,13 +2267,14 @@ export default function MagicTvRemoteScreen() {
               </Pressable>
 
               <Pressable
-                onPress={handleSendTvText}
-                disabled={sendingText}
+      onPressIn={tap}
+                onPress={() => {
+                  void handleOpenTvUrl();
+                }}
                 style={[styles.primaryActionBtn, { backgroundColor: accent }]}
               >
-                <Text style={styles.primaryActionText}>
-                  {sendingText ? t('sending') : t('sendText')}
-                </Text>
+                <Ionicons name="globe-outline" size={18} color="#081012" />
+                <Text style={styles.primaryActionText}>{t('openLink')}</Text>
               </Pressable>
             </View>
           </View>
@@ -2005,7 +2298,7 @@ export default function MagicTvRemoteScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 {t('settings')}
               </Text>
-              <Pressable onPress={() => setSettingsModalVisible(false)}>
+              <Pressable onPressIn={tap} onPress={() => setSettingsModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
             </View>
@@ -2014,12 +2307,110 @@ export default function MagicTvRemoteScreen() {
               style={styles.modalScroll}
               contentContainerStyle={styles.modalScrollContent}
             >
+              <View style={styles.settingsGroup}>
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  {t('language')}
+                </Text>
+                <View style={styles.sensitivityBtnsRow}>
+                  {(['ar', 'en'] as Language[]).map((value) => (
+                    <Pressable
+      onPressIn={tap}
+                      key={value}
+                      accessibilityRole="button"
+                      onPress={() => setState((prev) => ({ ...prev, language: value }))}
+                      style={[
+                        styles.presetPill,
+                        {
+                          backgroundColor: state.language === value ? accent : colors.cardAlt,
+                          borderColor: state.language === value ? accent : colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.presetPillText,
+                          { color: state.language === value ? '#081012' : colors.text },
+                        ]}
+                      >
+                        {t(value === 'ar' ? 'arabic' : 'english')}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.settingsGroup}>
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  {t('appearance')}
+                </Text>
+                <View style={styles.sensitivityBtnsRow}>
+                  {(['system', 'dark', 'light'] as AppearanceMode[]).map((value) => (
+                    <Pressable
+      onPressIn={tap}
+                      key={value}
+                      accessibilityRole="button"
+                      onPress={() =>
+                        setState((prev) => ({ ...prev, appearance: value }))
+                      }
+                      style={[
+                        styles.presetPill,
+                        {
+                          backgroundColor:
+                            state.appearance === value ? accent : colors.cardAlt,
+                          borderColor:
+                            state.appearance === value ? accent : colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.presetPillText,
+                          {
+                            color:
+                              state.appearance === value ? '#081012' : colors.text,
+                          },
+                        ]}
+                      >
+                        {t(value)}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.settingsGroup}>
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  {t('accent')}
+                </Text>
+                <View style={styles.settingsAccentRow}>
+                  {ACCENT_THEMES.map((theme) => (
+                    <Pressable
+      onPressIn={tap}
+                      key={theme.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={theme.name[state.language]}
+                      onPress={() => setState((prev) => ({ ...prev, accent: theme.id }))}
+                      style={[
+                        styles.settingsAccentSwatch,
+                        {
+                          backgroundColor: theme.value,
+                          borderColor: state.accent === theme.id ? colors.text : colors.border,
+                        },
+                      ]}
+                    >
+                      {state.accent === theme.id ? (
+                        <Ionicons name="checkmark" size={13} color="#081012" />
+                      ) : null}
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+
               <Pressable
+      onPressIn={tap}
+                accessibilityRole="button"
                 onPress={() =>
-                  setState((prev) => ({
-                    ...prev,
-                    hapticsEnabled: !prev.hapticsEnabled,
-                  }))
+                  setState((prev) => ({ ...prev, hapticsEnabled: !prev.hapticsEnabled }))
                 }
                 style={[
                   styles.settingToggleRow,
@@ -2035,11 +2426,10 @@ export default function MagicTvRemoteScreen() {
               </Pressable>
 
               <Pressable
+      onPressIn={tap}
+                accessibilityRole="button"
                 onPress={() =>
-                  setState((prev) => ({
-                    ...prev,
-                    autoConnect: !prev.autoConnect,
-                  }))
+                  setState((prev) => ({ ...prev, autoConnect: !prev.autoConnect }))
                 }
                 style={[
                   styles.settingToggleRow,
@@ -2054,6 +2444,25 @@ export default function MagicTvRemoteScreen() {
                 </Text>
               </Pressable>
 
+              <Pressable
+      onPressIn={tap}
+                accessibilityRole="button"
+                onPress={() =>
+                  setState((prev) => ({ ...prev, keepAwake: !prev.keepAwake }))
+                }
+                style={[
+                  styles.settingToggleRow,
+                  { backgroundColor: colors.input, borderColor: colors.border },
+                ]}
+              >
+                <Text style={[styles.settingLabel, { color: colors.text }]}>
+                  {t('keepAwake')}
+                </Text>
+                <Text style={styles.settingValueAccent}>
+                  {state.keepAwake ? t('enabled') : t('disabled')}
+                </Text>
+              </Pressable>
+
               <View
                 style={[
                   styles.sensitivityBox,
@@ -2065,16 +2474,14 @@ export default function MagicTvRemoteScreen() {
                 </Text>
                 <View style={styles.sensitivityBtnsRow}>
                   {[0.8, 1.35, 1.9, 2.5].map((preset) => {
-                    const active =
-                      Math.abs(state.mouseSensitivity - preset) < 0.08;
+                    const active = Math.abs(state.mouseSensitivity - preset) < 0.08;
                     return (
                       <Pressable
+      onPressIn={tap}
                         key={preset}
+                        accessibilityRole="button"
                         onPress={() =>
-                          setState((prev) => ({
-                            ...prev,
-                            mouseSensitivity: preset,
-                          }))
+                          setState((prev) => ({ ...prev, mouseSensitivity: preset }))
                         }
                         style={[
                           styles.presetPill,
@@ -2098,64 +2505,8 @@ export default function MagicTvRemoteScreen() {
                 </View>
               </View>
 
-              <View style={styles.customAppsHeader}>
-                <Text style={[styles.sectionLabel, { color: colors.secondary }]}>
-                  {t('apps')}
-                </Text>
-                <Pressable
-                  onPress={() => {
-                    setSettingsModalVisible(false);
-                    setAddAppModalVisible(true);
-                  }}
-                  style={styles.addShortcutBtn}
-                >
-                  <Ionicons name="add-circle-outline" size={18} color={accent} />
-                  <Text style={styles.addShortcutText}>{t('addApp')}</Text>
-                </Pressable>
-              </View>
-
-              <FlatList
-                data={state.customApps}
-                keyExtractor={(item) => item.id}
-                scrollEnabled={false}
-                renderItem={({ item }) => (
-                  <View
-                    style={[
-                      styles.shortcutListRow,
-                      { backgroundColor: colors.input, borderColor: colors.border },
-                    ]}
-                  >
-                    <View>
-                      <Text style={[styles.deviceName, { color: colors.text }]}>
-                        {item.name}
-                      </Text>
-                      <Text style={[styles.deviceMeta, { color: colors.secondary }]}>
-                        {item.packageName}
-                      </Text>
-                    </View>
-                    {state.customApps.length > 1 ? (
-                      <Pressable
-                        onPress={() =>
-                          setState((prev) => ({
-                            ...prev,
-                            customApps: prev.customApps.filter(
-                              (a) => a.id !== item.id,
-                            ),
-                          }))
-                        }
-                      >
-                        <Ionicons
-                          name="remove-circle-outline"
-                          size={19}
-                          color="#F87171"
-                        />
-                      </Pressable>
-                    ) : null}
-                  </View>
-                )}
-              />
-
               <Pressable
+      onPressIn={tap}
                 onPress={() => setSettingsModalVisible(false)}
                 style={[styles.settingsDoneButton, { backgroundColor: accent }]}
               >
@@ -2183,7 +2534,7 @@ export default function MagicTvRemoteScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 {t('addApp')}
               </Text>
-              <Pressable onPress={() => setAddAppModalVisible(false)}>
+              <Pressable onPressIn={tap} onPress={() => setAddAppModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
             </View>
@@ -2220,6 +2571,7 @@ export default function MagicTvRemoteScreen() {
             />
 
             <Pressable
+      onPressIn={tap}
               onPress={handleAddCustomApp}
               style={[styles.primaryActionBtn, { backgroundColor: accent }]}
             >
@@ -2246,7 +2598,7 @@ export default function MagicTvRemoteScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 {t('apps')}
               </Text>
-              <Pressable onPress={() => setAppsModalVisible(false)}>
+              <Pressable onPressIn={tap} onPress={() => setAppsModalVisible(false)}>
                 <Ionicons name="close" size={24} color={colors.text} />
               </Pressable>
             </View>
@@ -2256,6 +2608,7 @@ export default function MagicTvRemoteScreen() {
               contentContainerStyle={styles.modalScrollContent}
             >
               <Pressable
+      onPressIn={tap}
                 onPress={handleFetchInstalledApps}
                 disabled={fetchingApps}
                 style={[styles.primaryActionBtn, { backgroundColor: accent }]}
@@ -2295,6 +2648,7 @@ export default function MagicTvRemoteScreen() {
                       ]}
                     >
                       <Pressable
+      onPressIn={tap}
                         style={styles.deviceRowMain}
                         onPress={() => {
                           setAppsModalVisible(false);
@@ -2309,6 +2663,7 @@ export default function MagicTvRemoteScreen() {
                         </Text>
                       </Pressable>
                       <Pressable
+      onPressIn={tap}
                         accessibilityRole="button"
                         accessibilityLabel={t(
                           favorite ? 'removeFavorite' : 'addFavorite',
@@ -2349,6 +2704,7 @@ export default function MagicTvRemoteScreen() {
                       ]}
                     >
                       <Pressable
+      onPressIn={tap}
                         style={styles.deviceRowMain}
                         onPress={() => {
                           setAppsModalVisible(false);
@@ -2363,6 +2719,7 @@ export default function MagicTvRemoteScreen() {
                         </Text>
                       </Pressable>
                       <Pressable
+      onPressIn={tap}
                         accessibilityRole="button"
                         accessibilityLabel={t(
                           favorite ? 'removeFavorite' : 'addFavorite',
@@ -2382,6 +2739,7 @@ export default function MagicTvRemoteScreen() {
               )}
 
               <Pressable
+      onPressIn={tap}
                 onPress={() => {
                   setAppsModalVisible(false);
                   setAddAppModalVisible(true);
@@ -2414,6 +2772,7 @@ export default function MagicTvRemoteScreen() {
                 {t('pairing')}
               </Text>
               <Pressable
+      onPressIn={tap}
                 onPress={() => {
                   setPairingModalVisible(false);
                   tvRemote.disconnect();
@@ -2446,6 +2805,7 @@ export default function MagicTvRemoteScreen() {
               ]}
             />
             <Pressable
+      onPressIn={tap}
               disabled={pairingCode.length !== 6}
               onPress={async () => {
                 const ok = await tvRemote.submitPairingCode(pairingCode);
@@ -2713,6 +3073,59 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginTop: 4,
+  },
+  fullScreenModal: {
+    flex: 1,
+    backgroundColor: '#000000',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 24,
+    gap: 18,
+  },
+  fullScreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  fullScreenTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  fullScreenInput: {
+    flex: 1,
+    minHeight: 120,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+    fontSize: 18,
+    lineHeight: 26,
+    textAlignVertical: 'top',
+    backgroundColor: '#07120F',
+  },
+  fullScreenHint: {
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  settingsGroup: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  settingsAccentRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  settingsAccentSwatch: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   settingToggleRow: {
     flexDirection: 'row',

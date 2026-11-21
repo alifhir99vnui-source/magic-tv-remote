@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef } from 'react';
 import {
   PanResponder,
   Pressable,
@@ -29,15 +29,18 @@ export interface RemoteExperienceColors {
   accentSoft: string;
 }
 
+export type RemoteMouseMode = 'pointer' | 'swipe' | 'air';
+
 export interface RemoteMouseController {
-  mode: 'touchpad' | 'air';
-  setMode: (mode: 'touchpad' | 'air') => void;
+  mode: RemoteMouseMode;
+  setMode: (mode: RemoteMouseMode) => void;
   pointerSupported: boolean;
   airSupported: boolean;
   pointerStatus: string;
   airStatus: string;
   sensitivity: number;
-  setSensitivity: (value: number) => void;
+  scrollInverted: boolean;
+  onToggleScrollInverted: () => void;
   onTouchpadDelta: (dx: number, dy: number) => void;
   onTouchpadPress: () => void;
   onRightClick: () => void;
@@ -45,44 +48,52 @@ export interface RemoteMouseController {
   onScroll: (deltaY: number) => void;
   onDragStart: () => void;
   onDragEnd: () => void;
+  onSwipe: (direction: 'up' | 'down' | 'left' | 'right') => void;
+  onConfirm: () => void;
 }
 
 interface RemoteExperienceProps {
   activeTab: 'remote' | 'mouse';
   onTabChange: (tab: 'remote' | 'mouse') => void;
   onSendKey: (key: string) => void;
-  onOpenSettings?: () => void;
   onOpenKeyboard?: () => void;
   onOpenApps?: () => void;
-  onQuickPaste?: () => void;
   onVoiceSearch?: () => void;
+  onTvSettings?: () => void;
+  onOpenShare?: () => void;
+  onPressFeedback?: () => void;
   t: (key: TranslationKey) => string;
   colors: RemoteExperienceColors;
   isConnected: boolean;
-  apps: RemoteAppShortcut[];
-  onLaunchApp: (packageName: string) => void;
+  deviceName: string;
   mouse: RemoteMouseController;
 }
 
-export function RemoteExperience({
+function RemoteExperienceComponent({
   activeTab,
   onTabChange,
   onSendKey,
-  onOpenSettings,
   onOpenKeyboard,
   onOpenApps,
-  onQuickPaste,
   onVoiceSearch,
+  onTvSettings,
+  onOpenShare,
+  onPressFeedback,
   t,
   colors,
-  apps,
-  onLaunchApp,
+  isConnected,
+  deviceName,
   mouse,
 }: RemoteExperienceProps) {
-  const [keypadVisible, setKeypadVisible] = useState(false);
-  const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
-  const movedRef = useRef(false);
-  const draggingRef = useRef(false);
+  const touchRef = useRef<{
+    x: number;
+    y: number;
+    startedAt: number;
+    totalX: number;
+    totalY: number;
+    moved: boolean;
+    twoFinger: boolean;
+  } | null>(null);
   const accent = colors.accent;
 
   const touchpadResponder = useMemo(
@@ -90,69 +101,113 @@ export function RemoteExperience({
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: (evt) => {
-          lastTouchRef.current = {
-            x: evt.nativeEvent.pageX,
-            y: evt.nativeEvent.pageY,
+        onPanResponderGrant: (event) => {
+          touchRef.current = {
+            x: event.nativeEvent.pageX,
+            y: event.nativeEvent.pageY,
+            startedAt: Date.now(),
+            totalX: 0,
+            totalY: 0,
+            moved: false,
+            twoFinger: false,
           };
-          movedRef.current = false;
-          draggingRef.current = false;
         },
-        onPanResponderMove: (evt) => {
-          if (!lastTouchRef.current) return;
-          const dx = evt.nativeEvent.pageX - lastTouchRef.current.x;
-          const dy = evt.nativeEvent.pageY - lastTouchRef.current.y;
-          if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-            if (!movedRef.current) {
-              movedRef.current = true;
-              draggingRef.current = true;
+        onPanResponderMove: (event) => {
+          const current = touchRef.current;
+          if (!current) return;
+          const x = event.nativeEvent.pageX;
+          const y = event.nativeEvent.pageY;
+          const dx = x - current.x;
+          const dy = y - current.y;
+          const touches = event.nativeEvent.touches?.length ?? 1;
+          current.totalX += dx;
+          current.totalY += dy;
+
+          if (touches >= 2) {
+            current.twoFinger = true;
+            current.moved = true;
+            mouse.onScroll(mouse.scrollInverted ? dy : -dy);
+          } else if (mouse.mode === 'pointer') {
+            if (!current.moved && Math.abs(dx) + Math.abs(dy) > 2) {
+              current.moved = true;
               mouse.onDragStart();
             }
-            mouse.onTouchpadDelta(dx, dy);
-            lastTouchRef.current = {
-              x: evt.nativeEvent.pageX,
-              y: evt.nativeEvent.pageY,
-            };
+            if (current.moved) mouse.onTouchpadDelta(dx, dy);
+          } else if (Math.abs(dx) + Math.abs(dy) > 2) {
+            current.moved = true;
           }
+
+          current.x = x;
+          current.y = y;
         },
         onPanResponderRelease: () => {
-          if (draggingRef.current) mouse.onDragEnd();
-          else if (!movedRef.current) mouse.onTouchpadPress();
-          lastTouchRef.current = null;
-          movedRef.current = false;
-          draggingRef.current = false;
+          const current = touchRef.current;
+          touchRef.current = null;
+          if (!current) return;
+          const duration = Date.now() - current.startedAt;
+
+          if (mouse.mode === 'swipe' && !current.twoFinger) {
+            if (Math.max(Math.abs(current.totalX), Math.abs(current.totalY)) > 40) {
+              if (Math.abs(current.totalX) > Math.abs(current.totalY)) {
+                mouse.onSwipe(current.totalX > 0 ? 'right' : 'left');
+              } else {
+                mouse.onSwipe(current.totalY > 0 ? 'down' : 'up');
+              }
+            } else if (!current.moved && duration < 350) {
+              mouse.onConfirm();
+            }
+            return;
+          }
+
+          if (current.moved && !current.twoFinger) {
+            mouse.onDragEnd();
+          } else if (!current.moved && duration >= 450) {
+            mouse.onRightClick();
+          } else if (!current.moved) {
+            mouse.onTouchpadPress();
+          }
         },
         onPanResponderTerminate: () => {
-          if (draggingRef.current) mouse.onDragEnd();
-          lastTouchRef.current = null;
-          movedRef.current = false;
-          draggingRef.current = false;
+          const current = touchRef.current;
+          touchRef.current = null;
+          if (current?.moved && !current.twoFinger && mouse.mode === 'pointer') {
+            mouse.onDragEnd();
+          }
         },
       }),
     [mouse],
   );
 
-  const roundButton = (
+  const circularButton = (
     key: string,
     label: TranslationKey,
     icon: keyof typeof Ionicons.glyphMap,
     action: () => void,
     active = false,
+    disabled = false,
+    large = false,
   ) => (
     <Pressable
+      onPressIn={onPressFeedback}
       key={key}
       accessibilityRole="button"
       accessibilityLabel={t(label)}
+      disabled={disabled}
       onPress={action}
       style={[
-        styles.circleActionButton,
+        large ? styles.largeCircleButton : styles.circleButton,
         {
           backgroundColor: active ? colors.accentSoft : colors.card,
           borderColor: active ? accent : colors.border,
+          opacity: disabled ? 0.45 : 1,
         },
       ]}
     >
-      <Ionicons name={icon} size={19} color={active ? accent : colors.text} />
+      <Ionicons
+        name={icon}
+        size={large ? 27 : 19}
+        color={active || !disabled ? accent : colors.secondary}
+      />
     </Pressable>
   );
 
@@ -165,6 +220,7 @@ export function RemoteExperience({
         ]}
       >
         <Pressable
+      onPressIn={onPressFeedback}
           accessibilityRole="button"
           accessibilityState={{ selected: activeTab === 'remote' }}
           onPress={() => onTabChange('remote')}
@@ -190,8 +246,8 @@ export function RemoteExperience({
             {t('buttons')}
           </Text>
         </Pressable>
-
         <Pressable
+      onPressIn={onPressFeedback}
           accessibilityRole="button"
           accessibilityState={{ selected: activeTab === 'mouse' }}
           onPress={() => onTabChange('mouse')}
@@ -221,61 +277,37 @@ export function RemoteExperience({
 
       {activeTab === 'remote' ? (
         <ScrollView
+          style={styles.tabScroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.topActionsRow}>
+          <View style={styles.remoteTopRow}>
             <Pressable
+      onPressIn={onPressFeedback}
               accessibilityRole="button"
               accessibilityLabel={t('power')}
               onPress={() => onSendKey('power')}
-              style={[styles.powerButton, { borderColor: '#7F1D1D' }]}
+              style={[styles.circleButton, styles.powerButton]}
             >
               <Ionicons name="power" size={21} color="#F87171" />
             </Pressable>
-            {roundButton('source', 'source', 'tv-outline', () => onSendKey('source'))}
-            {roundButton('mute', 'mute', 'volume-mute-outline', () => onSendKey('mute'))}
-            {roundButton('keyboard', 'keyboard', 'keypad-outline', () => onOpenKeyboard?.())}
-            {roundButton('paste', 'quickPaste', 'clipboard-outline', () => onQuickPaste?.())}
-            {roundButton('apps', 'apps', 'apps-outline', () => onOpenApps?.())}
-            {roundButton('info', 'info', 'information-circle-outline', () => onSendKey('info'))}
-            {roundButton('numpad', 'numpad', 'grid-outline', () => setKeypadVisible((v) => !v), keypadVisible)}
-            {roundButton('settings', 'settings', 'settings-outline', () => onOpenSettings?.())}
+            {circularButton('source', 'source', 'tv-outline', () =>
+              onSendKey('source'),
+            )}
+            {circularButton('mute', 'mute', 'volume-mute-outline', () =>
+              onSendKey('mute'),
+            )}
+            {circularButton('keyboard', 'keyboard', 'keypad-outline', () =>
+              onOpenKeyboard?.(),
+            )}
           </View>
 
-          {keypadVisible && (
-            <View
-              style={[
-                styles.numpadCard,
-                { backgroundColor: colors.card, borderColor: colors.border },
-              ]}
-            >
-              {[
-                ['1', '2', '3'],
-                ['4', '5', '6'],
-                ['7', '8', '9'],
-                ['menu', '0', 'back'],
-              ].map((row, rIndex) => (
-                <View key={rIndex} style={styles.numpadRow}>
-                  {row.map((item) => (
-                    <Pressable
-                      key={item}
-                      accessibilityRole="button"
-                      onPress={() => onSendKey(/^[0-9]$/.test(item) ? `num${item}` : item)}
-                      style={[
-                        styles.numpadKey,
-                        { backgroundColor: colors.input, borderColor: colors.border },
-                      ]}
-                    >
-                      <Text style={[styles.numpadKeyText, { color: colors.text }]}>
-                        {item === 'menu' ? 'MENU' : item === 'back' ? 'DEL' : item}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              ))}
-            </View>
-          )}
+          <View style={styles.settingsRow}>
+            {circularButton('tvSettings', 'tvSettings', 'settings-outline', () => {
+              if (onTvSettings) onTvSettings();
+              else onSendKey('settings');
+            })}
+          </View>
 
           <View
             style={[
@@ -284,6 +316,7 @@ export function RemoteExperience({
             ]}
           >
             <Pressable
+      onPressIn={onPressFeedback}
               accessibilityRole="button"
               accessibilityLabel={t('up')}
               onPress={() => onSendKey('up')}
@@ -293,6 +326,7 @@ export function RemoteExperience({
             </Pressable>
             <View style={styles.dpadMiddleRow}>
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('left')}
                 onPress={() => onSendKey('left')}
@@ -301,6 +335,7 @@ export function RemoteExperience({
                 <Ionicons name="chevron-back" size={26} color={colors.text} />
               </Pressable>
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('ok')}
                 onPress={() => onSendKey('ok')}
@@ -309,6 +344,7 @@ export function RemoteExperience({
                 <Text style={styles.okButtonText}>OK</Text>
               </Pressable>
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('right')}
                 onPress={() => onSendKey('right')}
@@ -318,6 +354,7 @@ export function RemoteExperience({
               </Pressable>
             </View>
             <Pressable
+      onPressIn={onPressFeedback}
               accessibilityRole="button"
               accessibilityLabel={t('down')}
               onPress={() => onSendKey('down')}
@@ -328,29 +365,28 @@ export function RemoteExperience({
           </View>
 
           <View style={styles.navRow}>
-            {[
-              ['back', 'back', 'arrow-back-outline'],
-              ['home', 'home', 'home-outline'],
-              ['menu', 'menu', 'menu-outline'],
-              ['recents', 'recentApps', 'albums-outline'],
-            ].map(([key, label, icon]) => (
+            {(
+              [
+                ['back', 'back', 'arrow-back-outline'],
+                ['home', 'home', 'home-outline'],
+                ['menu', 'menu', 'menu-outline'],
+                ['recents', 'recentApps', 'albums-outline'],
+              ] as Array<[string, TranslationKey, keyof typeof Ionicons.glyphMap]>
+            ).map(([key, label, icon]) => (
               <Pressable
+      onPressIn={onPressFeedback}
                 key={key}
                 accessibilityRole="button"
-                accessibilityLabel={t(label as TranslationKey)}
+                accessibilityLabel={t(label)}
                 onPress={() => onSendKey(key)}
                 style={[
                   styles.navPill,
                   { backgroundColor: colors.card, borderColor: colors.border },
                 ]}
               >
-                <Ionicons
-                  name={icon as keyof typeof Ionicons.glyphMap}
-                  size={17}
-                  color={colors.text}
-                />
+                <Ionicons name={icon} size={17} color={colors.text} />
                 <Text style={[styles.navPillText, { color: colors.text }]}>
-                  {t(label as TranslationKey)}
+                  {t(label)}
                 </Text>
               </Pressable>
             ))}
@@ -364,6 +400,7 @@ export function RemoteExperience({
               ]}
             >
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('volumeUp')}
                 onPress={() => onSendKey('volumeUp')}
@@ -375,6 +412,7 @@ export function RemoteExperience({
                 {t('volume')}
               </Text>
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('volumeDown')}
                 onPress={() => onSendKey('volumeDown')}
@@ -385,6 +423,7 @@ export function RemoteExperience({
             </View>
 
             <Pressable
+      onPressIn={onPressFeedback}
               accessibilityRole="button"
               accessibilityLabel={t('voiceSearch')}
               onPress={onVoiceSearch ?? (() => onSendKey('voice'))}
@@ -394,7 +433,9 @@ export function RemoteExperience({
               ]}
             >
               <Ionicons name="mic-outline" size={24} color={accent} />
-              <Text style={[styles.voiceLabel, { color: accent }]}>{t('voiceSearch')}</Text>
+              <Text style={[styles.voiceLabel, { color: accent }]}>
+                {t('voiceSearch')}
+              </Text>
             </Pressable>
 
             <View
@@ -404,6 +445,7 @@ export function RemoteExperience({
               ]}
             >
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('channelUp')}
                 onPress={() => onSendKey('channelUp')}
@@ -415,6 +457,7 @@ export function RemoteExperience({
                 {t('channel')}
               </Text>
               <Pressable
+      onPressIn={onPressFeedback}
                 accessibilityRole="button"
                 accessibilityLabel={t('channelDown')}
                 onPress={() => onSendKey('channelDown')}
@@ -426,256 +469,197 @@ export function RemoteExperience({
           </View>
 
           <View style={styles.mediaRow}>
-            {[
-              ['rewind', 'rewind', 'play-skip-back-outline'],
-              ['playPause', 'playPause', 'pause-circle-outline'],
-              ['forward', 'forward', 'play-skip-forward-outline'],
-              ['stop', 'stop', 'stop-circle-outline'],
-              ['source', 'source', 'tv-outline'],
-            ].map(([key, label, icon]) => (
+            {(
+              [
+                ['rewind', 'rewind', 'play-skip-back-outline'],
+                ['playPause', 'playPause', 'pause-circle-outline'],
+                ['forward', 'forward', 'play-skip-forward-outline'],
+                ['source', 'source', 'tv-outline'],
+              ] as Array<[string, TranslationKey, keyof typeof Ionicons.glyphMap]>
+            ).map(([key, label, icon]) => (
               <Pressable
+      onPressIn={onPressFeedback}
                 key={key}
                 accessibilityRole="button"
-                accessibilityLabel={t(label as TranslationKey)}
+                accessibilityLabel={t(label)}
                 onPress={() => onSendKey(key)}
                 style={[
                   styles.mediaButton,
                   { backgroundColor: colors.card, borderColor: colors.border },
                 ]}
               >
-                <Ionicons
-                  name={icon as keyof typeof Ionicons.glyphMap}
-                  size={18}
-                  color={accent}
-                />
+                <Ionicons name={icon} size={18} color={accent} />
                 <Text style={[styles.mediaButtonText, { color: colors.text }]}>
-                  {t(label as TranslationKey)}
+                  {t(label)}
                 </Text>
               </Pressable>
             ))}
-          </View>
-
-          <View
-            style={[
-              styles.smartCard,
-              { backgroundColor: colors.card, borderColor: colors.border },
-            ]}
-          >
-            <Text style={[styles.sectionTitle, { color: colors.secondary }]}>
-              {t('smartButtons')}
-            </Text>
-            <View style={styles.smartRow}>
-              {[
-                ['red', 'red', '#F87171'],
-                ['green', 'green', '#34D399'],
-                ['yellow', 'yellow', '#FBBF24'],
-                ['blue', 'blue', '#60A5FA'],
-              ].map(([key, label, color]) => (
-                <Pressable
-                  key={key}
-                  accessibilityRole="button"
-                  accessibilityLabel={t(label as TranslationKey)}
-                  onPress={() => onSendKey(key)}
-                  style={[styles.colorButton, { backgroundColor: color }]}
-                >
-                  <Text style={styles.colorButtonText}>{t(label as TranslationKey)}</Text>
-                </Pressable>
-              ))}
-            </View>
-            <View style={styles.smartRow}>
-              {[
-                ['subtitle', 'subtitle', 'language-outline'],
-                ['audio', 'audio', 'musical-notes-outline'],
-                ['info', 'info', 'information-circle-outline'],
-                ['menu', 'menu', 'options-outline'],
-              ].map(([key, label, icon]) => (
-                <Pressable
-                  key={key}
-                  accessibilityRole="button"
-                  accessibilityLabel={t(label as TranslationKey)}
-                  onPress={() => onSendKey(key)}
-                  style={[
-                    styles.smartPill,
-                    { backgroundColor: colors.cardAlt, borderColor: colors.border },
-                  ]}
-                >
-                  <Ionicons
-                    name={icon as keyof typeof Ionicons.glyphMap}
-                    size={15}
-                    color={accent}
-                  />
-                  <Text style={[styles.smartPillText, { color: colors.text }]}>
-                    {t(label as TranslationKey)}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          <View style={styles.appsSection}>
-            <Text style={[styles.sectionTitle, { color: colors.secondary }]}>
-              {t('favoriteApps')}
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.appsRow}
-            >
-              {apps.map((app) => (
-                <Pressable
-                  key={app.id}
-                  accessibilityRole="button"
-                  onPress={() => onLaunchApp(app.packageName)}
-                  style={[
-                    styles.appChip,
-                    { backgroundColor: colors.card, borderColor: colors.border },
-                  ]}
-                >
-                  <Ionicons name={app.icon} size={18} color={accent} />
-                  <Text style={[styles.appChipText, { color: colors.text }]}>
-                    {app.name}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
           </View>
         </ScrollView>
       ) : (
-        <View style={styles.mouseContainer}>
-          <View style={styles.mouseModeRow}>
+        <ScrollView
+          style={styles.tabScroll}
+          contentContainerStyle={styles.mouseContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.toolsRow}>
+            {circularButton('tvSettings', 'tvSettings', 'settings-outline', () => {
+              if (onTvSettings) onTvSettings();
+              else onSendKey('settings');
+            })}
+            {circularButton('apps', 'fetchApps', 'apps-outline', () =>
+              onOpenApps?.(),
+            )}
+            {circularButton('cast', 'cast', 'tv-outline', () =>
+              onSendKey('source'),
+            )}
+            {circularButton('voice', 'voiceSearch', 'mic-outline', () =>
+              onVoiceSearch?.(),
+            )}
+            {circularButton('share', 'share', 'link-outline', () =>
+              onOpenShare?.(),
+            )}
+            {circularButton('search', 'search', 'search-outline', () =>
+              onSendKey('search'),
+            )}
+          </View>
+
+          <View style={styles.touchpadShell}>
             <Pressable
+      onPressIn={onPressFeedback}
               accessibilityRole="button"
-              accessibilityState={{ selected: mouse.mode === 'touchpad' }}
-              onPress={() => mouse.setMode('touchpad')}
+              accessibilityLabel={t('invertScroll')}
+              onPress={mouse.onToggleScrollInverted}
               style={[
-                styles.mouseModePill,
+                styles.invertButton,
                 {
-                  backgroundColor:
-                    mouse.mode === 'touchpad' ? colors.accentSoft : colors.card,
-                  borderColor: mouse.mode === 'touchpad' ? accent : colors.border,
+                  backgroundColor: colors.card,
+                  borderColor: mouse.scrollInverted ? accent : colors.border,
                 },
               ]}
             >
-              <Text
-                style={[
-                  styles.mouseModeText,
-                  { color: mouse.mode === 'touchpad' ? accent : colors.text },
-                ]}
-              >
-                {t('touchpad')}
-              </Text>
+              <Ionicons
+                name="swap-vertical-outline"
+                size={16}
+                color={mouse.scrollInverted ? accent : colors.text}
+              />
             </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ selected: mouse.mode === 'air' }}
-              disabled={!mouse.airSupported}
-              onPress={() => mouse.setMode(mouse.mode === 'air' ? 'touchpad' : 'air')}
+            <View
+              {...touchpadResponder.panHandlers}
               style={[
-                styles.mouseModePill,
-                {
-                  backgroundColor: mouse.mode === 'air' ? colors.accentSoft : colors.card,
-                  borderColor: mouse.mode === 'air' ? accent : colors.border,
-                  opacity: mouse.airSupported ? 1 : 0.5,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.mouseModeText,
-                  { color: mouse.mode === 'air' ? accent : colors.text },
-                ]}
-              >
-                {mouse.airSupported ? t('airMouse') : t('airUnavailable')}
-              </Text>
-            </Pressable>
-          </View>
-
-          <View
-            {...touchpadResponder.panHandlers}
-            style={[
-              styles.touchpadArea,
-              { backgroundColor: colors.card, borderColor: colors.border },
-            ]}
-          >
-            <Ionicons
-              name={mouse.mode === 'air' ? 'navigate-circle-outline' : 'finger-print-outline'}
-              size={34}
-              color={accent}
-            />
-            <Text style={[styles.touchpadStatus, { color: colors.text }]}>
-              {mouse.mode === 'air' ? mouse.airStatus : mouse.pointerStatus}
-            </Text>
-            <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
-              {t('touchpadHint')}
-            </Text>
-          </View>
-
-          <View style={styles.mouseButtonsRow}>
-            {[
-              ['leftClick', 'left', mouse.onTouchpadPress],
-              ['rightClick', 'right', mouse.onRightClick],
-              ['recenter', 'center', mouse.onRecenter],
-            ].map(([label, icon, action]) => (
-              <Pressable
-                key={String(label)}
-                accessibilityRole="button"
-                onPress={action as () => void}
-                style={[
-                  styles.mouseActionButton,
-                  { backgroundColor: colors.card, borderColor: colors.border },
-                ]}
-              >
-                <Ionicons
-                  name={
-                    (icon === 'left'
-                      ? 'checkbox-outline'
-                      : icon === 'right'
-                        ? 'square-outline'
-                        : 'locate-outline') as keyof typeof Ionicons.glyphMap
-                  }
-                  size={15}
-                  color={accent}
-                />
-                <Text style={[styles.mouseActionText, { color: colors.text }]}>
-                  {t(label as TranslationKey)}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <View style={styles.scrollControlsRow}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => mouse.onScroll(-30)}
-              style={[
-                styles.scrollButton,
+                styles.touchpadArea,
                 { backgroundColor: colors.card, borderColor: colors.border },
               ]}
             >
-              <Ionicons name="arrow-up" size={17} color={colors.text} />
-              <Text style={[styles.scrollButtonText, { color: colors.text }]}>
-                {t('scrollUp')}
+              <Ionicons
+                name={
+                  mouse.mode === 'air'
+                    ? 'navigate-circle-outline'
+                    : mouse.mode === 'swipe'
+                      ? 'swap-horizontal-outline'
+                      : 'finger-print-outline'
+                }
+                size={34}
+                color={accent}
+              />
+              <Text style={[styles.touchpadStatus, { color: colors.text }]}>
+                {mouse.mode === 'air' ? mouse.airStatus : mouse.pointerStatus}
               </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => mouse.onScroll(30)}
+              <Text style={[styles.touchpadHint, { color: colors.secondary }]}>
+                {t('touchpadHint')}
+              </Text>
+              <Text style={[styles.scrollModeText, { color: colors.secondary }]}>
+                {mouse.scrollInverted ? t('scrollInverted') : t('scrollNormal')}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.modeBar}>
+            <View style={styles.modeCluster}>
+              {circularButton('recenter', 'recenter', 'locate-outline', mouse.onRecenter)}
+              {circularButton(
+                'pointer',
+                'pointerMode',
+                'navigate-outline',
+                () => mouse.setMode('pointer'),
+                mouse.mode === 'pointer',
+              )}
+            </View>
+            <View
               style={[
-                styles.scrollButton,
-                { backgroundColor: colors.card, borderColor: colors.border },
+                styles.devicePill,
+                { backgroundColor: colors.cardAlt, borderColor: colors.border },
               ]}
             >
-              <Ionicons name="arrow-down" size={17} color={colors.text} />
-              <Text style={[styles.scrollButtonText, { color: colors.text }]}>
-                {t('scrollDown')}
+              <View
+                style={[
+                  styles.connectionDot,
+                  { backgroundColor: isConnected ? accent : colors.secondary },
+                ]}
+              />
+              <Text style={[styles.devicePillText, { color: colors.text }]} numberOfLines={1}>
+                {deviceName}
               </Text>
-            </Pressable>
+            </View>
+            <View style={styles.modeCluster}>
+              {circularButton(
+                'swipe',
+                'swipeMode',
+                'swap-horizontal-outline',
+                () => mouse.setMode('swipe'),
+                mouse.mode === 'swipe',
+              )}
+              {circularButton(
+                'air',
+                mouse.airSupported ? 'airMouse' : 'airUnavailable',
+                'navigate-circle-outline',
+                () => mouse.setMode('air'),
+                mouse.mode === 'air',
+                !mouse.airSupported,
+              )}
+            </View>
           </View>
-        </View>
+
+          <View style={styles.navigationRow}>
+            {circularButton('pageUp', 'pageUp', 'chevron-up', () =>
+              onSendKey('pageUp'),
+            )}
+            {circularButton('pageDown', 'pageDown', 'chevron-down', () =>
+              onSendKey('pageDown'),
+            )}
+            {circularButton('back', 'back', 'arrow-back-outline', () =>
+              onSendKey('back'),
+              false,
+              false,
+              true,
+            )}
+            {circularButton('recents', 'recentApps', 'albums-outline', () =>
+              onSendKey('recents'),
+            )}
+            {circularButton('home', 'home', 'home-outline', () =>
+              onSendKey('home'),
+            )}
+          </View>
+
+          <View style={styles.quickRow}>
+            {circularButton('volumeDown', 'volumeDown', 'remove', () =>
+              onSendKey('volumeDown'),
+            )}
+            {circularButton('volumeUp', 'volumeUp', 'add', () =>
+              onSendKey('volumeUp'),
+            )}
+            {circularButton('keyboard', 'keyboard', 'keypad-outline', () =>
+              onOpenKeyboard?.(),
+            )}
+            {circularButton('power', 'power', 'power', () => onSendKey('power'))}
+          </View>
+        </ScrollView>
       )}
     </View>
   );
 }
+
+export const RemoteExperience = React.memo(RemoteExperienceComponent);
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -701,42 +685,31 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   modeButtonText: { fontSize: 12, fontWeight: '800' },
-  scrollContent: { paddingHorizontal: 14, paddingBottom: 16, gap: 12 },
-  topActionsRow: {
+  tabScroll: { flex: 1 },
+  scrollContent: { paddingHorizontal: 14, paddingBottom: 18, gap: 12 },
+  remoteTopRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
   },
-  powerButton: {
-    width: 45,
-    height: 45,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2A1215',
-    borderWidth: 1,
-    borderRadius: 23,
-  },
-  circleActionButton: {
-    width: 45,
-    height: 45,
+  settingsRow: { flexDirection: 'row', justifyContent: 'flex-end' },
+  circleButton: {
+    width: 46,
+    height: 46,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderRadius: 23,
   },
-  numpadCard: { padding: 10, gap: 8, borderWidth: 1, borderRadius: 18 },
-  numpadRow: { flexDirection: 'row', gap: 8 },
-  numpadKey: {
-    flex: 1,
-    minHeight: 40,
+  largeCircleButton: {
+    width: 62,
+    height: 62,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 31,
   },
-  numpadKeyText: { fontSize: 13, fontWeight: '800' },
+  powerButton: { backgroundColor: '#2A1215', borderColor: '#7F1D1D' },
   dpadOuter: {
     alignSelf: 'center',
     width: 214,
@@ -804,53 +777,24 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   mediaButtonText: { fontSize: 8, fontWeight: '700', textAlign: 'center' },
-  smartCard: { padding: 12, gap: 10, borderWidth: 1, borderRadius: 18 },
-  sectionTitle: { fontSize: 10, fontWeight: '900' },
-  smartRow: { flexDirection: 'row', gap: 6 },
-  colorButton: {
-    flex: 1,
-    minHeight: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-  },
-  colorButtonText: { color: '#081012', fontSize: 9, fontWeight: '900' },
-  smartPill: {
-    flex: 1,
-    minHeight: 38,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    borderWidth: 1,
-    borderRadius: 10,
-  },
-  smartPillText: { fontSize: 8, fontWeight: '700', textAlign: 'center' },
-  appsSection: { gap: 6 },
-  appsRow: { gap: 8 },
-  appChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderWidth: 1,
-    borderRadius: 14,
-  },
-  appChipText: { fontSize: 11, fontWeight: '800' },
-  mouseContainer: { flex: 1, paddingHorizontal: 14, paddingBottom: 12, gap: 10 },
-  mouseModeRow: { flexDirection: 'row', gap: 8 },
-  mouseModePill: {
-    flex: 1,
-    minHeight: 38,
+  mouseContent: { paddingHorizontal: 14, paddingBottom: 18, gap: 12 },
+  toolsRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  touchpadShell: { position: 'relative', minHeight: 230 },
+  invertButton: {
+    position: 'absolute',
+    zIndex: 2,
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 16,
   },
-  mouseModeText: { fontSize: 11, fontWeight: '800' },
   touchpadArea: {
     flex: 1,
+    minHeight: 230,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
@@ -860,27 +804,22 @@ const styles = StyleSheet.create({
   },
   touchpadStatus: { fontSize: 13, fontWeight: '800', textAlign: 'center' },
   touchpadHint: { fontSize: 11, textAlign: 'center' },
-  mouseButtonsRow: { flexDirection: 'row', gap: 8 },
-  mouseActionButton: {
+  scrollModeText: { fontSize: 10, fontWeight: '800', textAlign: 'center' },
+  modeBar: { flexDirection: 'row-reverse', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  modeCluster: { flexDirection: 'row', gap: 6 },
+  devicePill: {
     flex: 1,
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-    borderWidth: 1,
-    borderRadius: 13,
-  },
-  mouseActionText: { fontSize: 10, fontWeight: '800', textAlign: 'center' },
-  scrollControlsRow: { flexDirection: 'row', gap: 8 },
-  scrollButton: {
-    flex: 1,
-    minHeight: 40,
+    minHeight: 42,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    paddingHorizontal: 8,
     borderWidth: 1,
-    borderRadius: 13,
+    borderRadius: 14,
   },
-  scrollButtonText: { fontSize: 11, fontWeight: '800' },
+  connectionDot: { width: 8, height: 8, borderRadius: 4 },
+  devicePillText: { flex: 1, fontSize: 11, fontWeight: '900', textAlign: 'center' },
+  navigationRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  quickRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
 });

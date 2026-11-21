@@ -11,12 +11,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { RemoteExperienceColors } from './RemoteExperience';
 import { SavedDevice } from '../utils/device';
 import { TranslationKey } from '../utils/i18n';
-import { AccentId, AppearanceMode, ACCENT_THEMES, Language } from '../utils/theme';
 import { RoomProfile } from '../utils/room';
+import { TV_BRANDS, TV_BRAND_PROFILES } from '../utils/tvIr';
 
 interface ConnectionPanelProps {
   colors: RemoteExperienceColors;
   t: (key: TranslationKey) => string;
+  language: 'ar' | 'en';
+  onPressFeedback?: () => void;
   devices: SavedDevice[];
   activeDeviceId: string | null;
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
@@ -28,13 +30,6 @@ interface ConnectionPanelProps {
   irMissing: boolean;
   pointerSupported: boolean;
   airSupported: boolean;
-  hapticsEnabled: boolean;
-  autoConnect: boolean;
-  keepAwake: boolean;
-  sensitivity: number;
-  language: Language;
-  appearance: AppearanceMode;
-  accentId: AccentId;
   rooms: RoomProfile[];
   activeRoomId: string | null;
   tvBrand: string;
@@ -45,13 +40,6 @@ interface ConnectionPanelProps {
   onScanNetwork: () => void;
   onScanBluetooth: () => void;
   onOpenManual: () => void;
-  onToggleHaptics: () => void;
-  onToggleAutoConnect: () => void;
-  onToggleKeepAwake: () => void;
-  onSensitivityChange: (value: number) => void;
-  onLanguageChange: (language: Language) => void;
-  onAppearanceChange: (appearance: AppearanceMode) => void;
-  onAccentChange: (accent: AccentId) => void;
   onSaveRoom: () => void;
   onActivateRoom: (room: RoomProfile) => void;
   onDeleteRoom: (id: string) => void;
@@ -59,9 +47,11 @@ interface ConnectionPanelProps {
   onTvCodeSetChange: (codeSet: 1 | 2 | 3) => void;
 }
 
-export function ConnectionPanel({
+function ConnectionPanelComponent({
   colors,
   t,
+  language,
+  onPressFeedback,
   devices,
   activeDeviceId,
   connectionStatus,
@@ -73,13 +63,6 @@ export function ConnectionPanel({
   irMissing,
   pointerSupported,
   airSupported,
-  hapticsEnabled,
-  autoConnect,
-  keepAwake,
-  sensitivity,
-  language,
-  appearance,
-  accentId,
   rooms,
   activeRoomId,
   tvBrand,
@@ -90,13 +73,6 @@ export function ConnectionPanel({
   onScanNetwork,
   onScanBluetooth,
   onOpenManual,
-  onToggleHaptics,
-  onToggleAutoConnect,
-  onToggleKeepAwake,
-  onSensitivityChange,
-  onLanguageChange,
-  onAppearanceChange,
-  onAccentChange,
   onSaveRoom,
   onActivateRoom,
   onDeleteRoom,
@@ -170,6 +146,7 @@ export function ConnectionPanel({
 
       <View style={styles.actionRow}>
         <Pressable
+      onPressIn={onPressFeedback}
           accessibilityRole="button"
           disabled={scanning}
           onPress={onScanNetwork}
@@ -185,6 +162,7 @@ export function ConnectionPanel({
           </Text>
         </Pressable>
         <Pressable
+      onPressIn={onPressFeedback}
           accessibilityRole="button"
           disabled={btScanning}
           onPress={onScanBluetooth}
@@ -201,6 +179,7 @@ export function ConnectionPanel({
       </View>
 
       <Pressable
+      onPressIn={onPressFeedback}
         accessibilityRole="button"
         onPress={onOpenManual}
         style={[
@@ -228,6 +207,7 @@ export function ConnectionPanel({
           </Text>
           {discoveredDevices.map((device) => (
             <Pressable
+      onPressIn={onPressFeedback}
               key={device.id}
               accessibilityRole="button"
               onPress={() => onConnect(device)}
@@ -260,6 +240,7 @@ export function ConnectionPanel({
           </Text>
           {btDevices.map((device) => (
             <Pressable
+      onPressIn={onPressFeedback}
               key={device.address}
               accessibilityRole="button"
               onPress={() =>
@@ -341,9 +322,11 @@ export function ConnectionPanel({
       >
         <Text style={[styles.cardTitle, { color: colors.text }]}>{t('tvBrands')}</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.brandRow}>
-          {['Nikai', 'LG', 'Samsung', 'Sony', 'TCL', 'Hisense', 'Toshiba', 'AlHafidh', 'Star-X', 'Denka'].map(
-            (brand) => (
+          {TV_BRANDS.map((brand) => {
+            const profile = TV_BRAND_PROFILES[brand];
+            return (
               <Pressable
+      onPressIn={onPressFeedback}
                 key={brand}
                 accessibilityRole="button"
                 onPress={() => onTvBrandChange(brand)}
@@ -361,16 +344,17 @@ export function ConnectionPanel({
                     { color: tvBrand === brand ? '#081012' : colors.text },
                   ]}
                 >
-                  {brand}
+                  {profile.label[language]}
                 </Text>
               </Pressable>
-            ),
-          )}
+            );
+          })}
         </ScrollView>
         <View style={styles.codeSetRow}>
           <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('codeSet')}</Text>
           {[1, 2, 3].map((value) => (
             <Pressable
+      onPressIn={onPressFeedback}
               key={value}
               accessibilityRole="button"
               onPress={() => onTvCodeSetChange(value as 1 | 2 | 3)}
@@ -408,6 +392,7 @@ export function ConnectionPanel({
           rooms.map((room) => (
             <View key={room.id} style={styles.deviceRow}>
               <Pressable
+      onPressIn={onPressFeedback}
                 style={styles.deviceText}
                 onPress={() => onActivateRoom(room)}
               >
@@ -423,6 +408,7 @@ export function ConnectionPanel({
           ))
         )}
         <Pressable
+      onPressIn={onPressFeedback}
           accessibilityRole="button"
           onPress={onSaveRoom}
           style={[styles.primaryButton, { backgroundColor: accent }]}
@@ -432,154 +418,11 @@ export function ConnectionPanel({
         </Pressable>
       </View>
 
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>{t('appearance')}</Text>
-        <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('language')}</Text>
-        <View style={styles.optionRow}>
-          {(['ar', 'en'] as Language[]).map((value) => (
-            <Pressable
-              key={value}
-              accessibilityRole="button"
-              onPress={() => onLanguageChange(value)}
-              style={[
-                styles.optionPill,
-                {
-                  backgroundColor: language === value ? accent : colors.cardAlt,
-                  borderColor: language === value ? accent : colors.border,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.optionText,
-                  { color: language === value ? '#081012' : colors.text },
-                ]}
-              >
-                {t(value === 'ar' ? 'arabic' : 'english')}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('appearance')}</Text>
-        <View style={styles.optionRow}>
-          {(['system', 'dark', 'light'] as AppearanceMode[]).map((value) => (
-            <Pressable
-              key={value}
-              accessibilityRole="button"
-              onPress={() => onAppearanceChange(value)}
-              style={[
-                styles.optionPill,
-                {
-                  backgroundColor: appearance === value ? accent : colors.cardAlt,
-                  borderColor: appearance === value ? accent : colors.border,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.optionText,
-                  { color: appearance === value ? '#081012' : colors.text },
-                ]}
-              >
-                {t(value)}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('theme')}</Text>
-        <View style={styles.accentGrid}>
-          {ACCENT_THEMES.map((theme) => (
-            <Pressable
-              key={theme.id}
-              accessibilityRole="button"
-              accessibilityLabel={theme.name[language]}
-              onPress={() => onAccentChange(theme.id)}
-              style={[
-                styles.accentSwatch,
-                {
-                  backgroundColor: theme.value,
-                  borderColor: accentId === theme.id ? colors.text : colors.border,
-                },
-              ]}
-            >
-              {accentId === theme.id ? (
-                <Ionicons name="checkmark" size={14} color="#081012" />
-              ) : null}
-            </Pressable>
-          ))}
-        </View>
-        <Text style={[styles.cardHint, { color: accent }]}>
-          {ACCENT_THEMES.find((theme) => theme.id === accentId)?.name[language]}
-        </Text>
-      </View>
-
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>{t('settings')}</Text>
-        <ToggleRow
-          label={t('haptics')}
-          value={hapticsEnabled}
-          colors={colors}
-          onPress={onToggleHaptics}
-        />
-        <ToggleRow
-          label={t('autoConnect')}
-          value={autoConnect}
-          colors={colors}
-          onPress={onToggleAutoConnect}
-        />
-        <ToggleRow
-          label="Keep Awake"
-          value={keepAwake}
-          colors={colors}
-          onPress={onToggleKeepAwake}
-        />
-        <Text style={[styles.cardHint, { color: colors.secondary }]}>
-          {t('sensitivity')}: {sensitivity.toFixed(2)}x
-        </Text>
-        <View style={styles.sensitivityRow}>
-          {[0.8, 1.35, 1.9, 2.5].map((value) => (
-            <Pressable
-              key={value}
-              accessibilityRole="button"
-              onPress={() => onSensitivityChange(value)}
-              style={[
-                styles.sensitivityPill,
-                {
-                  backgroundColor:
-                    Math.abs(sensitivity - value) < 0.08 ? accent : colors.cardAlt,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.sensitivityText,
-                  {
-                    color:
-                      Math.abs(sensitivity - value) < 0.08 ? '#081012' : colors.text,
-                  },
-                ]}
-              >
-                {value}x
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
     </ScrollView>
   );
 }
+
+export const ConnectionPanel = React.memo(ConnectionPanelComponent);
 
 function HardwareChip({ label, ok }: { label: string; ok: boolean }) {
   return (
@@ -602,42 +445,6 @@ function HardwareChip({ label, ok }: { label: string; ok: boolean }) {
         {label}
       </Text>
     </View>
-  );
-}
-
-function ToggleRow({
-  label,
-  value,
-  colors,
-  onPress,
-}: {
-  label: string;
-  value: boolean;
-  colors: RemoteExperienceColors;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="switch"
-      accessibilityState={{ checked: value }}
-      onPress={onPress}
-      style={styles.toggleRow}
-    >
-      <Text style={[styles.toggleLabel, { color: colors.text }]}>{label}</Text>
-      <View
-        style={[
-          styles.toggleTrack,
-          { backgroundColor: value ? colors.accent : colors.cardAlt },
-        ]}
-      >
-        <View
-          style={[
-            styles.toggleThumb,
-            { transform: [{ translateX: value ? 18 : 0 }] },
-          ]}
-        />
-      </View>
-    </Pressable>
   );
 }
 
@@ -725,39 +532,4 @@ const styles = StyleSheet.create({
   codeSetRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   codePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, borderWidth: 1 },
   codeText: { fontSize: 11, fontWeight: '900' },
-  optionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  optionPill: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, borderWidth: 1 },
-  optionText: { fontSize: 11, fontWeight: '800' },
-  accentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  accentSwatch: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  toggleLabel: { fontSize: 12, fontWeight: '700' },
-  toggleTrack: {
-    width: 42,
-    height: 24,
-    borderRadius: 12,
-    justifyContent: 'center',
-    paddingHorizontal: 3,
-  },
-  toggleThumb: { width: 18, height: 18, borderRadius: 9, backgroundColor: '#FFFFFF' },
-  sensitivityRow: { flexDirection: 'row', gap: 8 },
-  sensitivityPill: {
-    flex: 1,
-    minHeight: 34,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sensitivityText: { fontSize: 10, fontWeight: '900' },
 });

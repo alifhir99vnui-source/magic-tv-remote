@@ -27,6 +27,8 @@ import {
 interface AcPanelProps {
   colors: RemoteExperienceColors;
   t: (key: TranslationKey) => string;
+  language: 'ar' | 'en';
+  onPressFeedback?: () => void;
   onSendIr: (brand: AcBrand, state: AcState, codeSet: AcCodeSet) => Promise<void>;
   onStateChange?: (brand: AcBrand, codeSet: AcCodeSet, state: AcState) => void;
   initialBrand?: AcBrand;
@@ -51,9 +53,11 @@ const FAN_KEYS: Record<AcFan, TranslationKey> = {
   High: 'high',
 };
 
-export function AcPanel({
+function AcPanelComponent({
   colors,
   t,
+  language,
+  onPressFeedback,
   onSendIr,
   onStateChange,
   initialBrand,
@@ -95,7 +99,7 @@ export function AcPanel({
       <Text style={[styles.title, { color: colors.text }]}>{t('acControl')}</Text>
       <Text style={[styles.subtitle, { color: colors.secondary }]}>{t('selectUnit')}</Text>
 
-      <Text style={[styles.sectionTitle, { color: colors.secondary }]}>{t('tvBrands').replace('TV', 'AC')}</Text>
+      <Text style={[styles.sectionTitle, { color: colors.secondary }]}>{t('acBrands')}</Text>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -105,6 +109,7 @@ export function AcPanel({
           const selected = brand === item.brand;
           return (
             <Pressable
+      onPressIn={onPressFeedback}
               key={item.brand}
               accessibilityRole="button"
               accessibilityState={{ selected }}
@@ -132,7 +137,7 @@ export function AcPanel({
                   { color: selected ? '#081012' : colors.text },
                 ]}
               >
-                {item.label.ar}
+                {item.label[language]}
               </Text>
             </Pressable>
           );
@@ -143,6 +148,7 @@ export function AcPanel({
         <Text style={[styles.cardHint, { color: colors.secondary }]}>{t('codeSet')}</Text>
         {AC_CODE_SETS.map((value) => (
           <Pressable
+      onPressIn={onPressFeedback}
             key={value}
             accessibilityRole="button"
             onPress={() => setCodeSet(value)}
@@ -167,7 +173,7 @@ export function AcPanel({
       </View>
 
       <Text style={[styles.protocolHint, { color: colors.secondary }]}>
-        {`${profile.protocol} · ${profile.detail.ar}`}
+        {`${profile.protocol} · ${profile.detail[language]}`}
       </Text>
 
       {irMissing ? (
@@ -196,6 +202,7 @@ export function AcPanel({
             </Text>
           </View>
           <Pressable
+      onPressIn={onPressFeedback}
             accessibilityRole="switch"
             accessibilityState={{ checked: state.power }}
             onPress={() => update({ power: !state.power })}
@@ -214,14 +221,15 @@ export function AcPanel({
 
         <View style={styles.temperatureRow}>
           <Pressable
+            onPressIn={onPressFeedback}
             accessibilityRole="button"
             accessibilityLabel={t('temperature')}
             onPress={() =>
-              update({ temperature: Math.max(profile.minTemperature, state.temperature - 1) })
+              update({ temperature: Math.min(profile.maxTemperature, state.temperature + 1) })
             }
             style={[styles.tempButton, { borderColor: colors.border }]}
           >
-            <Ionicons name="remove-outline" size={24} color={colors.text} />
+            <Ionicons name="add-outline" size={24} color={colors.text} />
           </Pressable>
           <View>
             <Text style={[styles.temperature, { color: colors.text }]}>
@@ -232,14 +240,15 @@ export function AcPanel({
             </Text>
           </View>
           <Pressable
+            onPressIn={onPressFeedback}
             accessibilityRole="button"
             accessibilityLabel={t('temperature')}
             onPress={() =>
-              update({ temperature: Math.min(profile.maxTemperature, state.temperature + 1) })
+              update({ temperature: Math.max(profile.minTemperature, state.temperature - 1) })
             }
             style={[styles.tempButton, { borderColor: colors.border }]}
           >
-            <Ionicons name="add-outline" size={24} color={colors.text} />
+            <Ionicons name="remove-outline" size={24} color={colors.text} />
           </Pressable>
         </View>
       </View>
@@ -256,6 +265,7 @@ export function AcPanel({
             const selected = state.mode === mode;
             return (
               <Pressable
+      onPressIn={onPressFeedback}
                 key={mode}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
@@ -287,6 +297,7 @@ export function AcPanel({
             const selected = state.fan === fan;
             return (
               <Pressable
+      onPressIn={onPressFeedback}
                 key={fan}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
@@ -323,30 +334,35 @@ export function AcPanel({
           label={t('swing')}
           value={state.swing}
           colors={colors}
+          onPressFeedback={onPressFeedback}
           onPress={() => update({ swing: !state.swing })}
         />
         <ToggleRow
-          label={t('turbo')}
+          label={t('quickCool')}
           value={state.turbo}
           colors={colors}
+          onPressFeedback={onPressFeedback}
           onPress={() => update({ turbo: !state.turbo })}
         />
         <ToggleRow
           label={t('eco')}
           value={state.eco}
           colors={colors}
+          onPressFeedback={onPressFeedback}
           onPress={() => update({ eco: !state.eco })}
         />
         <ToggleRow
           label={t('ledOff')}
           value={state.ledOff}
           colors={colors}
+          onPressFeedback={onPressFeedback}
           onPress={() => update({ ledOff: !state.ledOff })}
         />
         <ToggleRow
           label={t('sleepTimer')}
           value={state.sleepTimer > 0 || state.sleep}
           colors={colors}
+          onPressFeedback={onPressFeedback}
           onPress={() => {
             const index = AC_SLEEP_TIMERS.indexOf(state.sleepTimer);
             const next = AC_SLEEP_TIMERS[(index + 1) % AC_SLEEP_TIMERS.length];
@@ -359,6 +375,7 @@ export function AcPanel({
       </View>
 
       <Pressable
+      onPressIn={onPressFeedback}
         accessibilityRole="button"
         disabled={disabled}
         onPress={submit}
@@ -385,19 +402,24 @@ export function AcPanel({
   );
 }
 
+export const AcPanel = React.memo(AcPanelComponent);
+
 function ToggleRow({
   label,
   value,
   colors,
+  onPressFeedback,
   onPress,
 }: {
   label: string;
   value: boolean;
   colors: RemoteExperienceColors;
+  onPressFeedback?: () => void;
   onPress: () => void;
 }) {
   return (
     <Pressable
+      onPressIn={onPressFeedback}
       accessibilityRole="switch"
       accessibilityState={{ checked: value }}
       onPress={onPress}

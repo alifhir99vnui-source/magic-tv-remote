@@ -1,4 +1,7 @@
+import { RealIrController } from './realIr';
+
 export type TvBrand =
+  | 'Magic'
   | 'Nikai'
   | 'LG'
   | 'Samsung'
@@ -6,9 +9,17 @@ export type TvBrand =
   | 'TCL'
   | 'Hisense'
   | 'Toshiba'
+  | 'Panasonic'
+  | 'Skyworth'
+  | 'Xiaomi'
+  | 'Philips'
+  | 'Sharp'
+  | 'StarSat'
+  | 'Tiger'
   | 'AlHafidh'
   | 'Star-X'
-  | 'Denka';
+  | 'Denka'
+  | 'Generic';
 
 export interface TvBrandProfile {
   brand: TvBrand;
@@ -18,6 +29,7 @@ export interface TvBrandProfile {
 }
 
 export const TV_BRANDS: TvBrand[] = [
+  'Magic',
   'Nikai',
   'LG',
   'Samsung',
@@ -25,9 +37,17 @@ export const TV_BRANDS: TvBrand[] = [
   'TCL',
   'Hisense',
   'Toshiba',
+  'Panasonic',
+  'Skyworth',
+  'Xiaomi',
+  'Philips',
+  'Sharp',
+  'StarSat',
+  'Tiger',
   'AlHafidh',
   'Star-X',
   'Denka',
+  'Generic',
 ];
 
 export const TV_CODE_SETS = [1, 2, 3] as const;
@@ -74,6 +94,12 @@ const BASE_COMMANDS: Record<string, number> = {
 };
 
 export const TV_BRAND_PROFILES: Record<TvBrand, TvBrandProfile> = {
+  Magic: {
+    brand: 'Magic',
+    label: { ar: 'ماجيك', en: 'Magic' },
+    address: { 1: { low: 0x00, high: 0xff }, 2: { low: 0x80, high: 0x7f }, 3: { low: 0x01, high: 0xfe } },
+    commands: BASE_COMMANDS,
+  },
   Nikai: {
     brand: 'Nikai',
     label: { ar: 'نيكاي', en: 'Nikai' },
@@ -134,13 +160,55 @@ export const TV_BRAND_PROFILES: Record<TvBrand, TvBrandProfile> = {
     address: { 1: { low: 0x00, high: 0x77 }, 2: { low: 0x10, high: 0x67 }, 3: { low: 0x30, high: 0x47 } },
     commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
   },
+  Panasonic: {
+    brand: 'Panasonic',
+    label: { ar: 'باناسونيك', en: 'Panasonic' },
+    address: { 1: { low: 0x04, high: 0xfb }, 2: { low: 0x24, high: 0xdb }, 3: { low: 0x44, high: 0xbb } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x55, menu: 0x4d },
+  },
+  Skyworth: {
+    brand: 'Skyworth',
+    label: { ar: 'سكاي وورث', en: 'Skyworth' },
+    address: { 1: { low: 0x00, high: 0x5a }, 2: { low: 0x10, high: 0x4a }, 3: { low: 0x30, high: 0x2a } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
+  },
+  Xiaomi: {
+    brand: 'Xiaomi',
+    label: { ar: 'شاومي', en: 'Xiaomi' },
+    address: { 1: { low: 0x00, high: 0xee }, 2: { low: 0x10, high: 0xde }, 3: { low: 0x30, high: 0xbe } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
+  },
+  Philips: {
+    brand: 'Philips',
+    label: { ar: 'فيليبس', en: 'Philips' },
+    address: { 1: { low: 0x00, high: 0x33 }, 2: { low: 0x10, high: 0x23 }, 3: { low: 0x30, high: 0x03 } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
+  },
+  Sharp: {
+    brand: 'Sharp',
+    label: { ar: 'شارب', en: 'Sharp' },
+    address: { 1: { low: 0x00, high: 0x22 }, 2: { low: 0x10, high: 0x12 }, 3: { low: 0x30, high: 0x02 } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
+  },
+  StarSat: {
+    brand: 'StarSat',
+    label: { ar: 'ستار سات', en: 'StarSat' },
+    address: { 1: { low: 0x00, high: 0x88 }, 2: { low: 0x10, high: 0x78 }, 3: { low: 0x30, high: 0x58 } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
+  },
+  Tiger: {
+    brand: 'Tiger',
+    label: { ar: 'تايجر', en: 'Tiger' },
+    address: { 1: { low: 0x00, high: 0x99 }, 2: { low: 0x10, high: 0x89 }, 3: { low: 0x30, high: 0x69 } },
+    commands: { ...BASE_COMMANDS, power: 0x45, source: 0x54, menu: 0x4d },
+  },
+  Generic: {
+    brand: 'Generic',
+    label: { ar: 'عام / عالمي', en: 'Generic / Universal' },
+    address: { 1: { low: 0x00, high: 0xff }, 2: { low: 0x20, high: 0xdf }, 3: { low: 0x40, high: 0xbf } },
+    commands: BASE_COMMANDS,
+  },
 };
-
-function pushLsbByte(pattern: number[], value: number): void {
-  for (let bit = 0; bit < 8; bit += 1) {
-    pattern.push(560, ((value >> bit) & 1) ? 1690 : 560);
-  }
-}
 
 export function buildTvIrPattern(
   brand: TvBrand,
@@ -148,13 +216,11 @@ export function buildTvIrPattern(
   key: string,
   carrierFrequency = 38000,
 ): { carrierFrequency: number; pattern: number[] } {
-  const profile = TV_BRAND_PROFILES[brand];
+  const profile = TV_BRAND_PROFILES[brand] ?? TV_BRAND_PROFILES.Generic;
   const command = profile.commands[key] ?? 0x00;
   const address = profile.address[codeSet];
-  const pattern: number[] = [9000, 4500];
-  for (const byte of [address.low, address.high, command & 0xff, (~command) & 0xff]) {
-    pushLsbByte(pattern, byte);
+  if (brand === 'Samsung') {
+    return RealIrController.samsung32((address.low << 8) | address.high, command, carrierFrequency);
   }
-  pattern.push(560, 40000);
-  return { carrierFrequency, pattern };
+  return RealIrController.nec(address.low, address.high, command, carrierFrequency);
 }

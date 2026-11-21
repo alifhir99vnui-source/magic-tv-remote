@@ -35,7 +35,7 @@ jobs:
           cd android
           build_ok=0
           for i in 1 2 3; do
-            if ./gradlew assembleDebug --no-daemon --refresh-dependencies; then
+            if ./gradlew assembleRelease --no-daemon --refresh-dependencies; then
               build_ok=1
               break
             fi
@@ -51,4 +51,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: magic-tv-remote-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/release/*.apk

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Magic TV Remote",
     "slug": "magic-tv-remote",
-    "version": "1.0.3",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "magic-tv-remote",
@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.magicremote.tvremote",
-      "versionCode": 4,
+      "versionCode": 5,
       "permissions": [
         "android.permission.ACCESS_LOCAL_NETWORK",
         "android.permission.ACCESS_NETWORK_STATE",

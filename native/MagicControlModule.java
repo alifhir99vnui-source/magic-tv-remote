@@ -1,7 +1,6 @@
 package com.magicremote.tvremote;
 
 import android.Manifest;
-import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothHidDevice;
@@ -20,10 +19,8 @@ import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.PowerManager;
-import android.speech.RecognizerIntent;
 import android.util.Log;
 
-import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.NativeModule;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
@@ -47,6 +44,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -58,7 +56,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -68,9 +65,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @ReactModule(name = "MagicControl")
-public class MagicControlModule extends ReactContextBaseJavaModule implements ActivityEventListener {
+public class MagicControlModule extends ReactContextBaseJavaModule {
   private static final String TAG = "MagicControl";
-  private static final int REQUEST_VOICE_SEARCH = 4321;
   private static final String SSDP_REQUEST =
       "M-SEARCH * HTTP/1.1\r\n" +
       "HOST: 239.255.255.250:1900\r\n" +
@@ -85,7 +81,6 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
       "_airplay._tcp."
   };
 
-  private Promise voiceSearchPromise;
   private final AtomicInteger mouseButtons = new AtomicInteger(0);
   private PowerManager.WakeLock wakeLock;
   private static final byte[] HID_DESCRIPTOR = new byte[] {
@@ -105,7 +100,7 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     (byte) 0x25, (byte) 0x7F, (byte) 0x75, (byte) 0x08, (byte) 0x95, (byte) 0x01, (byte) 0x81, (byte) 0x06,
     (byte) 0xC0, (byte) 0xC0,
     (byte) 0x05, (byte) 0x0C, (byte) 0x09, (byte) 0x01, (byte) 0xA1, (byte) 0x01, (byte) 0x85, (byte) 0x03,
-    (byte) 0x15, (byte) 0x00, (byte) 0x26, (byte) 0xFF, (byte) 0x00, (byte) 0x75, (byte) 0x10,
+    (byte) 0x15, (byte) 0x00, (byte) 0x26, (byte) 0xFF, (byte) 0xFF, (byte) 0x75, (byte) 0x10,
     (byte) 0x95, (byte) 0x01, (byte) 0x09, (byte) 0x00, (byte) 0x81, (byte) 0x00, (byte) 0xC0
   };
 
@@ -176,9 +171,11 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     HID_KEYS.put("enter", 0x28);
     HID_KEYS.put("back", 0x29);
     HID_KEYS.put("del", 0x2A);
-    HID_KEYS.put("home", 0x2A);
+    HID_KEYS.put("home", 0x47);
     HID_KEYS.put("menu", 0x2F);
     HID_KEYS.put("settings", 0x2F);
+    HID_KEYS.put("pageUp", 0x4B);
+    HID_KEYS.put("pageDown", 0x4E);
     HID_KEYS.put("volumeUp", 0xE9);
     HID_KEYS.put("volumeDown", 0xEA);
     HID_KEYS.put("mute", 0xE2);
@@ -209,6 +206,31 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
   }
 
   private final ExecutorService executor = Executors.newCachedThreadPool();
+
+  private static boolean isConsumerUsage(int keyCode) {
+    switch (keyCode) {
+      case 0xE9:
+      case 0xEA:
+      case 0xE2:
+      case 0x9B:
+      case 0x9A:
+      case 0xCD:
+      case 0xB0:
+      case 0xB1:
+      case 0xB7:
+      case 0xB5:
+      case 0xB6:
+      case 0xCA:
+      case 0xCB:
+      case 0xE6:
+      case 0xB3:
+      case 0xB4:
+      case 0x188:
+        return true;
+      default:
+        return false;
+    }
+  }
   private BluetoothHidDevice hidDevice;
   private BluetoothDevice connectedHidDevice;
   private boolean hidRegistered;
@@ -253,25 +275,6 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
 
   public MagicControlModule(ReactApplicationContext reactContext) {
     super(reactContext);
-    reactContext.addActivityEventListener(this);
-  }
-
-  @Override
-  public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
-    if (requestCode != REQUEST_VOICE_SEARCH || voiceSearchPromise == null) return;
-    Promise pending = voiceSearchPromise;
-    voiceSearchPromise = null;
-    if (resultCode == Activity.RESULT_OK && data != null) {
-      ArrayList<String> matches = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-      String text = matches == null || matches.isEmpty() ? "" : matches.get(0);
-      pending.resolve(text == null ? "" : text);
-    } else {
-      pending.resolve("");
-    }
-  }
-
-  @Override
-  public void onNewIntent(Intent intent) {
   }
 
   @Override
@@ -302,21 +305,23 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
 
   @ReactMethod
   public void transmitIr(int carrierFrequency, ReadableArray pattern, Promise promise) {
-    try {
-      ConsumerIrManager manager = irManager();
-      if (manager == null || !manager.hasIrEmitter()) {
+    executor.execute(() -> {
+      try {
+        ConsumerIrManager manager = irManager();
+        if (manager == null || !manager.hasIrEmitter()) {
+          promise.resolve(false);
+          return;
+        }
+        int[] timings = new int[pattern.size()];
+        for (int i = 0; i < pattern.size(); i++) {
+          timings[i] = pattern.getInt(i);
+        }
+        manager.transmit(carrierFrequency, timings);
+        promise.resolve(true);
+      } catch (Throwable error) {
         promise.resolve(false);
-        return;
       }
-      int[] timings = new int[pattern.size()];
-      for (int i = 0; i < pattern.size(); i++) {
-        timings[i] = pattern.getInt(i);
-      }
-      manager.transmit(carrierFrequency, timings);
-      promise.resolve(true);
-    } catch (Throwable error) {
-      promise.resolve(false);
-    }
+    });
   }
 
   @ReactMethod
@@ -329,17 +334,19 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     int cmd = code & 0xFF;
     int inv = (~cmd) & 0xFF;
     int[] pattern = buildNecPattern(0x01, 0xFE, cmd, inv);
-    try {
-      ConsumerIrManager manager = irManager();
-      if (manager == null || !manager.hasIrEmitter()) {
+    executor.execute(() -> {
+      try {
+        ConsumerIrManager manager = irManager();
+        if (manager == null || !manager.hasIrEmitter()) {
+          promise.resolve(false);
+          return;
+        }
+        manager.transmit(38000, pattern);
+        promise.resolve(true);
+      } catch (Throwable error) {
         promise.resolve(false);
-        return;
       }
-      manager.transmit(38000, pattern);
-      promise.resolve(true);
-    } catch (Throwable error) {
-      promise.resolve(false);
-    }
+    });
   }
 
   private int[] buildNecPattern(int lowAddress, int highAddress, int command, int inverse) {
@@ -372,27 +379,6 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
       context.startActivity(launchIntent);
       promise.resolve(true);
     } catch (Throwable error) {
-      promise.resolve(false);
-    }
-  }
-
-  @ReactMethod
-  public void startVoiceSearch(Promise promise) {
-    Activity activity = getCurrentActivity();
-    if (activity == null) {
-      promise.resolve(false);
-      return;
-    }
-    Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-    intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "قل ما تريد البحث عنه على التلفاز");
-    intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-    try {
-      if (voiceSearchPromise != null) voiceSearchPromise.resolve(false);
-      voiceSearchPromise = promise;
-      activity.startActivityForResult(intent, REQUEST_VOICE_SEARCH);
-    } catch (Throwable error) {
-      voiceSearchPromise = null;
       promise.resolve(false);
     }
   }
@@ -455,6 +441,162 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
       }
       promise.resolve(readInstalledPackagesFromAdbShell(ip));
     });
+  }
+
+  @ReactMethod
+  public void runTvShellCommand(String ip, int port, String command, Promise promise) {
+    executor.execute(() -> {
+      boolean ok = runShellCommandOnHost(ip, port > 0 ? port : 5555, command);
+      promise.resolve(ok);
+    });
+  }
+
+  private boolean runShellCommandOnHost(String ip, int port, String command) {
+    if (command == null || command.trim().isEmpty()) return false;
+    if (command.contains("\n") || command.contains("\r")) return false;
+    String host = ip == null ? "" : ip.trim();
+    if (host.isEmpty() || host.equals("0.0.0.0")) return false;
+    try {
+      String encoded = URLEncoder.encode(command, StandardCharsets.UTF_8.name());
+      URL url = new URL("http://" + host + ":" + port + "/api/shell?command=" + encoded);
+      HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+      connection.setConnectTimeout(1500);
+      connection.setReadTimeout(2500);
+      connection.setRequestMethod("GET");
+      int status = connection.getResponseCode();
+      connection.disconnect();
+      if (status >= 200 && status < 300) return true;
+    } catch (Throwable ignored) {
+    }
+    Socket socket = null;
+    try {
+      socket = new Socket();
+      socket.connect(new InetSocketAddress(host, 5555), 2000);
+      socket.setSoTimeout(2500);
+      OutputStream output = socket.getOutputStream();
+      output.write(("shell:" + command + "\n").getBytes(StandardCharsets.UTF_8));
+      output.flush();
+      return true;
+    } catch (Throwable error) {
+      Log.w(TAG, "TV shell command failed", error);
+      return false;
+    } finally {
+      if (socket != null) {
+        try {
+          socket.close();
+        } catch (Throwable ignored) {
+        }
+      }
+    }
+  }
+
+  @ReactMethod
+  public void getTvDeviceIdentity(String ip, int port, Promise promise) {
+    executor.execute(() -> {
+      String host = ip == null ? "" : ip.trim();
+      WritableMap result = new WritableNativeMap();
+      result.putString("name", "");
+      result.putString("model", "");
+      if (host.isEmpty() || host.equals("0.0.0.0")) {
+        promise.resolve(result);
+        return;
+      }
+      String friendly = readIdentityFromHttp(host, port > 0 ? port : 5555);
+      String model = matchDeviceValue(friendly, "modelNumber");
+      if (model == null || model.isEmpty()) model = matchDeviceValue(friendly, "modelName");
+      if (model == null || model.isEmpty()) {
+        model = readShellOutputOnHost(host, 5555, "getprop ro.product.model");
+      }
+      String name = matchDeviceValue(friendly, "friendlyName");
+      if (name == null || name.isEmpty()) {
+        name = readShellOutputOnHost(host, 5555, "settings get global device_name");
+      }
+      if (name == null || name.isEmpty()) name = model;
+      result.putString("name", name == null ? "" : name.trim());
+      result.putString("model", model == null ? "" : model.trim());
+      promise.resolve(result);
+    });
+  }
+
+  private String readIdentityFromHttp(String host, int port) {
+    int[] ports = new int[] {port, 5555, 8008, 8060, 8080, 8090, 80};
+    String[] paths = new String[] {"/", "/description.xml", "/setup.xml", "/api/device", "/api/system"};
+    for (int candidatePort : ports) {
+      if (candidatePort <= 0) continue;
+      for (String path : paths) {
+        HttpURLConnection connection = null;
+        try {
+          URL url = new URL("http://" + host + ":" + candidatePort + path);
+          connection = (HttpURLConnection) url.openConnection();
+          connection.setConnectTimeout(700);
+          connection.setReadTimeout(1200);
+          connection.setRequestMethod("GET");
+          int status = connection.getResponseCode();
+          if (status < 200 || status >= 300) continue;
+          BufferedReader reader = new BufferedReader(
+              new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8));
+          StringBuilder response = new StringBuilder();
+          String line;
+          while ((line = reader.readLine()) != null && response.length() < 16384) {
+            response.append(line).append('\n');
+          }
+          reader.close();
+          String text = response.toString();
+          if (matchDeviceValue(text, "friendlyName") != null
+              || matchDeviceValue(text, "modelNumber") != null
+              || matchDeviceValue(text, "modelName") != null
+              || text.matches("(?s).*\\b(deviceName|model|device_name)\\b.*")) {
+            return text;
+          }
+        } catch (Throwable ignored) {
+        } finally {
+          if (connection != null) connection.disconnect();
+        }
+      }
+    }
+    return "";
+  }
+
+  private String matchDeviceValue(String source, String key) {
+    if (source == null || source.isEmpty() || key == null) return "";
+    try {
+      Pattern xml = Pattern.compile("<[^>]*" + key + "[^>]*>([^<]+)</[^>]*>", Pattern.CASE_INSENSITIVE);
+      Matcher xmlMatcher = xml.matcher(source);
+      if (xmlMatcher.find()) return xmlMatcher.group(1).trim();
+      Pattern json = Pattern.compile("[\"']" + key + "[\"']\\s*:\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
+      Matcher jsonMatcher = json.matcher(source);
+      if (jsonMatcher.find()) return jsonMatcher.group(1).trim();
+    } catch (Throwable ignored) {
+    }
+    return "";
+  }
+
+  private String readShellOutputOnHost(String host, int port, String command) {
+    Socket socket = null;
+    try {
+      socket = new Socket();
+      socket.connect(new InetSocketAddress(host, port), 1800);
+      socket.setSoTimeout(2200);
+      OutputStream output = socket.getOutputStream();
+      output.write(("shell:" + command + "\n").getBytes(StandardCharsets.UTF_8));
+      output.flush();
+      BufferedReader reader = new BufferedReader(
+          new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+      String line;
+      while ((line = reader.readLine()) != null) {
+        String cleaned = line.trim();
+        if (!cleaned.isEmpty() && !cleaned.startsWith("shell:")) return cleaned;
+      }
+    } catch (Throwable ignored) {
+    } finally {
+      if (socket != null) {
+        try {
+          socket.close();
+        } catch (Throwable ignored) {
+        }
+      }
+    }
+    return "";
   }
 
   private WritableArray readInstalledPackages(String ip, int port) {
@@ -850,7 +992,6 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     if (hidDevice == null || hidRegistered || hidRegistering) return;
     hidRegistering = true;
     try {
-      UUID uuid = UUID.randomUUID();
       BluetoothHidDeviceAppSdpSettings sdp = new BluetoothHidDeviceAppSdpSettings(
         "Magic TV Remote",
         "Magic TV Remote HID",
@@ -915,7 +1056,7 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
 
   private boolean sendMouseReport(int buttons, int dx, int dy, int wheel) {
     if (hidDevice == null || connectedHidDevice == null) return false;
-    byte[] report = new byte[5];
+    byte[] report = new byte[4];
     report[0] = (byte) buttons;
     report[1] = (byte) Math.max(-127, Math.min(127, dx));
     report[2] = (byte) Math.max(-127, Math.min(127, dy));
@@ -936,7 +1077,7 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
     }
     executor.execute(() -> {
       ensureHidProxy();
-      boolean consumer = keyCode >= 0x80;
+      boolean consumer = isConsumerUsage(keyCode);
       boolean pressed = consumer
         ? sendConsumerReport(keyCode)
         : sendKeyboardReport(0, keyCode);
@@ -949,6 +1090,118 @@ public class MagicControlModule extends ReactContextBaseJavaModule implements Ac
         ? sendConsumerReport(0)
         : sendKeyboardReport(0, 0);
       promise.resolve(pressed && released);
+    });
+  }
+
+  private int[] hidTextKey(char value) {
+    if (value >= 'a' && value <= 'z') return new int[] {0, 0x04 + (value - 'a')};
+    if (value >= 'A' && value <= 'Z') return new int[] {0x02, 0x04 + (value - 'A')};
+    if (value >= '1' && value <= '9') return new int[] {0, 0x1E + (value - '1')};
+    if (value == '0') return new int[] {0, 0x27};
+    switch (value) {
+      case ' ':
+        return new int[] {0, 0x2C};
+      case '\n':
+      case '\r':
+        return new int[] {0, 0x28};
+      case '\t':
+        return new int[] {0, 0x2B};
+      case '\b':
+        return new int[] {0, 0x2A};
+      case '\u001B':
+        return new int[] {0, 0x29};
+      case '-':
+        return new int[] {0, 0x2D};
+      case '=':
+        return new int[] {0, 0x2E};
+      case '[':
+        return new int[] {0, 0x2F};
+      case ']':
+        return new int[] {0, 0x30};
+      case '\\':
+        return new int[] {0, 0x31};
+      case ';':
+        return new int[] {0, 0x33};
+      case '\'':
+        return new int[] {0, 0x34};
+      case '`':
+        return new int[] {0, 0x35};
+      case ',':
+        return new int[] {0, 0x36};
+      case '.':
+        return new int[] {0, 0x37};
+      case '/':
+        return new int[] {0, 0x38};
+      case '!':
+        return new int[] {0x02, 0x1E};
+      case '@':
+        return new int[] {0x02, 0x1F};
+      case '#':
+        return new int[] {0x02, 0x20};
+      case '$':
+        return new int[] {0x02, 0x21};
+      case '%':
+        return new int[] {0x02, 0x22};
+      case '^':
+        return new int[] {0x02, 0x23};
+      case '&':
+        return new int[] {0x02, 0x24};
+      case '*':
+        return new int[] {0x02, 0x25};
+      case '(':
+        return new int[] {0x02, 0x26};
+      case ')':
+        return new int[] {0x02, 0x27};
+      case '_':
+        return new int[] {0x02, 0x2D};
+      case '+':
+        return new int[] {0x02, 0x2E};
+      case '{':
+        return new int[] {0x02, 0x2F};
+      case '}':
+        return new int[] {0x02, 0x30};
+      case '|':
+        return new int[] {0x02, 0x31};
+      case ':':
+        return new int[] {0x02, 0x33};
+      case '"':
+        return new int[] {0x02, 0x34};
+      case '~':
+        return new int[] {0x02, 0x35};
+      case '<':
+        return new int[] {0x02, 0x36};
+      case '>':
+        return new int[] {0x02, 0x37};
+      case '?':
+        return new int[] {0x02, 0x38};
+      default:
+        return null;
+    }
+  }
+
+  @ReactMethod
+  public void sendBluetoothHidText(String text, Promise promise) {
+    if (text == null || text.isEmpty()) {
+      promise.resolve(false);
+      return;
+    }
+    executor.execute(() -> {
+      ensureHidProxy();
+      boolean allSent = true;
+      for (int i = 0; i < text.length(); i++) {
+        int[] key = hidTextKey(text.charAt(i));
+        if (key == null) continue;
+        boolean pressed = sendKeyboardReport(key[0], key[1]);
+        try {
+          Thread.sleep(12);
+        } catch (InterruptedException error) {
+          Thread.currentThread().interrupt();
+          break;
+        }
+        boolean released = sendKeyboardReport(0, 0);
+        allSent = allSent && pressed && released;
+      }
+      promise.resolve(allSent);
     });
   }
 
