@@ -1,8 +1,10 @@
 package com.aluqabi.cinema.data.repository
 
+import android.content.Intent
 import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.data.local.PasswordHasher
 import com.aluqabi.cinema.data.local.SettingsDataStore
+import com.aluqabi.cinema.data.remote.SupabaseAuthService
 import com.aluqabi.cinema.data.remote.SupabaseClient
 import com.aluqabi.cinema.data.remote.asArrOrEmpty
 import com.aluqabi.cinema.data.remote.asObjOrNull
@@ -11,13 +13,19 @@ import com.aluqabi.cinema.data.remote.long
 import com.aluqabi.cinema.data.remote.str
 import com.aluqabi.cinema.domain.model.UserProfile
 import com.aluqabi.cinema.domain.model.UserRole
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -31,8 +39,67 @@ sealed interface AuthResult {
 
 class AuthRepository(
     private val supabase: SupabaseClient,
+    private val supabaseAuth: SupabaseAuthService,
     private val settingsDataStore: SettingsDataStore
 ) {
+    private val oauthScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val _oauthResult = MutableStateFlow<AuthResult?>(null)
+    val oauthResult: StateFlow<AuthResult?> = _oauthResult.asStateFlow()
+
+    fun consumeOAuthResult() { _oauthResult.value = null }
+
+    fun cancelOAuth() {
+        _oauthResult.value = AuthResult.Error("تم إلغاء تسجيل الدخول", "Sign-in cancelled")
+    }
+
+    fun handleOAuthIntent(intent: Intent) {
+        val data = intent.data ?: return
+        if (data.scheme?.lowercase() != AppConfig.AUTH_DEEP_LINK_SCHEME) return
+        if (data.host != null && data.host != AppConfig.AUTH_DEEP_LINK_HOST) return
+        val error = data.getQueryParameter("error")
+            ?: data.fragment?.split("&")?.firstOrNull { it.startsWith("error=") }?.removePrefix("error=")
+        if (!error.isNullOrBlank()) {
+            _oauthResult.value = AuthResult.Error(
+                "تعذر تسجيل الدخول: $error",
+                "Sign-in failed: $error"
+            )
+            return
+        }
+        if (data.query.isNullOrBlank() && data.fragment.isNullOrBlank()) return
+        supabaseAuth.handleDeeplink(intent) { session ->
+            oauthScope.launch {
+                runCatching {
+                    val userId = session.user?.id.orEmpty()
+                    if (userId.isNotBlank()) {
+                        settingsDataStore.setSession(session.accessToken, session.refreshToken, userId)
+                    }
+                    ensureProfileExists()
+                    val profile = refreshCurrentProfile()
+                    _oauthResult.value = if (profile != null) {
+                        AuthResult.Success(profile)
+                    } else {
+                        AuthResult.Error("تم الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
+                    }
+                }.onFailure {
+                    _oauthResult.value = AuthResult.Error(
+                        it.message ?: "فشل تسجيل الدخول",
+                        it.message ?: "Sign-in failed"
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun signInWithFacebook(): AuthResult {
+        if (!AppConfig.isFacebookSignInConfigured) return AuthResult.Error("لم يتم إعداد تسجيل الدخول بفيسبوك", "Facebook sign-in is not configured")
+        return try {
+            supabaseAuth.signInWithFacebook()
+            AuthResult.Info("جارٍ فتح نافذة تسجيل الدخول...", "Opening sign-in window...")
+        } catch (e: Exception) {
+            AuthResult.Error(e.message ?: "فشل تسجيل الدخول بفيسبوك", e.message ?: "Facebook sign-in failed")
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val currentProfile: Flow<UserProfile?> = settingsDataStore.preferences.flatMapLatest { prefs ->
         if (!prefs.isLoggedIn) flowOf(null)
@@ -63,31 +130,22 @@ class AuthRepository(
         if (password != confirmPassword) return AuthResult.Error("كلمتا المرور غير متطابقتين", "Passwords do not match")
         if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
 
-        val res = supabase.authPost(
-            "/auth/v1/signup",
-            buildJsonObject {
-                put("email", cleanEmail)
-                put("password", password)
-                put("data", buildJsonObject { put("name", cleanName) })
+        return try {
+            supabaseAuth.signUpWithEmail(cleanEmail, password, cleanName)
+            if (settingsDataStore.preferences.first().isLoggedIn) {
+                ensureProfileExists()
+                val profile = refreshCurrentProfile()
+                if (profile != null) AuthResult.Success(profile)
+                else AuthResult.Info("تم إنشاء الحساب", "Account created")
+            } else {
+                AuthResult.Info(
+                    "تم إنشاء الحساب. أكّد بريدك الإلكتروني ثم سجّل الدخول.",
+                    "Account created. Confirm your email, then sign in."
+                )
             }
-        )
-        return res.fold(
-            onSuccess = { obj ->
-                val hasSession = obj.str("access_token").isNotBlank()
-                if (hasSession) {
-                    saveSessionFromAuth(obj)
-                    val profile = refreshCurrentProfile()
-                    if (profile != null) AuthResult.Success(profile)
-                    else AuthResult.Info("تم إنشاء الحساب", "Account created")
-                } else {
-                    AuthResult.Info(
-                        "تم إنشاء الحساب. أكّد بريدك الإلكتروني ثم سجّل الدخول.",
-                        "Account created. Confirm your email, then sign in."
-                    )
-                }
-            },
-            onFailure = { AuthResult.Error(it.message ?: "فشل إنشاء الحساب", it.message ?: "Sign up failed") }
-        )
+        } catch (e: Exception) {
+            AuthResult.Error(e.message ?: "فشل إنشاء الحساب", e.message ?: "Sign up failed")
+        }
     }
 
     suspend fun signInWithEmail(email: String, password: String): AuthResult {
@@ -96,96 +154,33 @@ class AuthRepository(
         if (password.isBlank()) return AuthResult.Error("يرجى إدخال كلمة المرور", "Please enter your password")
         if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
 
-        val res = supabase.authPost(
-            "/auth/v1/token?grant_type=password",
-            buildJsonObject { put("email", cleanEmail); put("password", password) }
-        )
-        return res.fold(
-            onSuccess = { obj ->
-                saveSessionFromAuth(obj)
-                val profile = refreshCurrentProfile()
-                if (profile != null) AuthResult.Success(profile)
-                else AuthResult.Error("تم الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
-            },
-            onFailure = { AuthResult.Error(it.message ?: "فشل تسجيل الدخول", it.message ?: "Sign in failed") }
-        )
-    }
-
-    suspend fun sendPhoneOtp(phone: String, name: String = ""): AuthResult {
-        val cleanPhone = PasswordHasher.normalizePhone(phone)
-        if (!PasswordHasher.isValidPhone(cleanPhone)) return AuthResult.Error("رقم الهاتف غير صالح", "Invalid phone number")
-        if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
-        val res = supabase.authPost(
-            "/auth/v1/otp",
-            buildJsonObject {
-                put("phone", cleanPhone)
-                val cleanName = name.trim()
-                if (cleanName.isNotBlank()) {
-                    put("data", buildJsonObject { put("name", cleanName) })
-                }
-            }
-        )
-        return res.fold(
-            onSuccess = { AuthResult.Info("تم إرسال رمز التحقق عبر SMS", "SMS verification code sent") },
-            onFailure = { AuthResult.Error(it.message ?: "تعذر إرسال الرمز", it.message ?: "Could not send code") }
-        )
-    }
-
-    suspend fun verifyPhoneOtp(phone: String, code: String, name: String): AuthResult {
-        val cleanPhone = PasswordHasher.normalizePhone(phone)
-        val cleanCode = code.trim()
-        if (!PasswordHasher.isValidPhone(cleanPhone)) return AuthResult.Error("رقم الهاتف غير صالح", "Invalid phone number")
-        if (cleanCode.length < 4) return AuthResult.Error("رمز التحقق غير صحيح", "Invalid verification code")
-        val res = supabase.authPost(
-            "/auth/v1/verify",
-            buildJsonObject {
-                put("phone", cleanPhone)
-                put("token", cleanCode)
-                put("type", "sms")
-            }
-        )
-        return res.fold(
-            onSuccess = { obj ->
-                saveSessionFromAuth(obj)
-                val prefs = settingsDataStore.preferences.first()
-                val displayName = name.trim().ifBlank { cleanPhone }
-                if (prefs.isLoggedIn) {
-                    supabase.restPatch(
-                        "profiles?id=eq.${prefs.userId}",
-                        buildJsonObject { put("name", displayName) },
-                        prefs.accessToken
-                    )
-                }
-                val profile = refreshCurrentProfile()
-                if (profile != null) AuthResult.Success(profile)
-                else AuthResult.Error("تم التحقق لكن تعذر تحميل الملف الشخصي", "Verified but failed to load profile")
-            },
-            onFailure = { AuthResult.Error(it.message ?: "فشل التحقق", it.message ?: "Verification failed") }
-        )
+        return try {
+            supabaseAuth.signInWithEmail(cleanEmail, password)
+            ensureProfileExists()
+            val profile = refreshCurrentProfile()
+            if (profile != null) AuthResult.Success(profile)
+            else AuthResult.Error("تم الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
+        } catch (e: Exception) {
+            AuthResult.Error(e.message ?: "فشل تسجيل الدخول", e.message ?: "Sign in failed")
+        }
     }
 
     suspend fun signInWithGoogleIdToken(idToken: String): AuthResult {
         if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
-        val res = supabase.authPost(
-            "/auth/v1/token?grant_type=id_token",
-            buildJsonObject {
-                put("provider", "google")
-                put("id_token", idToken)
-            }
-        )
-        return res.fold(
-            onSuccess = { obj ->
-                saveSessionFromAuth(obj)
-                ensureProfileExists()
-                val profile = refreshCurrentProfile()
-                if (profile != null) AuthResult.Success(profile)
-                else AuthResult.Error("تم تسجيل الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
-            },
-            onFailure = { AuthResult.Error(it.message ?: "فشل تسجيل الدخول بجوجل", it.message ?: "Google sign-in failed") }
-        )
+        if (idToken.isBlank()) return AuthResult.Error("تعذر الحصول على بيانات جوجل", "Could not get Google credentials")
+        return try {
+            supabaseAuth.signInWithGoogle(idToken)
+            ensureProfileExists()
+            val profile = refreshCurrentProfile()
+            if (profile != null) AuthResult.Success(profile)
+            else AuthResult.Error("تم تسجيل الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
+        } catch (e: Exception) {
+            AuthResult.Error(e.message ?: "فشل تسجيل الدخول بجوجل", e.message ?: "Google sign-in failed")
+        }
     }
 
     suspend fun signOut() {
+        runCatching { supabaseAuth.clearSession() }
         settingsDataStore.setSession(null, null, null)
     }
 
@@ -194,6 +189,9 @@ class AuthRepository(
         val refreshToken = prefs.refreshToken
         if (refreshToken.isBlank()) return false
         if (!AppConfig.isSupabaseConfigured) return false
+        if (runCatching { supabaseAuth.refreshSession() }.getOrDefault(false)) {
+            return settingsDataStore.preferences.first().isLoggedIn
+        }
         val res = supabase.authPost(
             "/auth/v1/token?grant_type=refresh_token",
             buildJsonObject { put("refresh_token", refreshToken) }

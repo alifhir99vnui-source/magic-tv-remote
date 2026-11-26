@@ -1,6 +1,7 @@
 package com.aluqabi.cinema
 
 import android.app.PictureInPictureParams
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Build
@@ -88,6 +89,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val container = (application as AlUqabiCinemaApp).container
+        handleAuthIntent(intent)
 
         setContent {
             val authViewModel: AuthViewModel = viewModel(factory = AuthViewModel.Factory(container.authRepository))
@@ -134,6 +136,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleAuthIntent(intent)
+    }
+
+    private fun handleAuthIntent(intent: Intent?) {
+        if (intent == null) return
+        (application as AlUqabiCinemaApp).container.authRepository.handleOAuthIntent(intent)
     }
 
     override fun onUserLeaveHint() {

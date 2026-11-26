@@ -1,13 +1,19 @@
 package com.aluqabi.cinema.di
 
 import android.content.Context
+import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.data.local.AppDatabase
 import com.aluqabi.cinema.data.local.SettingsDataStore
+import com.aluqabi.cinema.data.local.SupabaseSessionManager
+import com.aluqabi.cinema.data.remote.SupabaseAuthService
 import com.aluqabi.cinema.data.remote.SupabaseClient
 import com.aluqabi.cinema.data.remote.TmdbApiService
 import com.aluqabi.cinema.data.repository.AuthRepository
 import com.aluqabi.cinema.data.repository.CatalogRepository
 import com.aluqabi.cinema.data.repository.SourcesRepository
+import io.github.jan.supabase.auth.Auth
+import io.github.jan.supabase.auth.FlowType
+import io.github.jan.supabase.createSupabaseClient
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -39,8 +45,26 @@ class AppContainer(context: Context) {
     val tmdbApiService: TmdbApiService = retrofit.create(TmdbApiService::class.java)
     val supabaseClient: SupabaseClient = SupabaseClient(okHttpClient)
 
+    private val supabaseAuthClient = createSupabaseClient(
+        supabaseUrl = AppConfig.SUPABASE_URL,
+        supabaseKey = AppConfig.SUPABASE_ANON_KEY
+    ) {
+        install(Auth) {
+            scheme = AppConfig.AUTH_DEEP_LINK_SCHEME
+            host = AppConfig.AUTH_DEEP_LINK_HOST
+            flowType = FlowType.IMPLICIT
+            alwaysAutoRefresh = false
+            autoLoadFromStorage = true
+            autoSaveToStorage = true
+            sessionManager = SupabaseSessionManager(settingsDataStore)
+        }
+    }
+
+    val supabaseAuthService: SupabaseAuthService = SupabaseAuthService(supabaseAuthClient)
+
     val authRepository: AuthRepository = AuthRepository(
         supabase = supabaseClient,
+        supabaseAuth = supabaseAuthService,
         settingsDataStore = settingsDataStore
     ).also { auth ->
         supabaseClient.tokenProvider = {

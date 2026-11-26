@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.cinemaDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -43,6 +44,7 @@ class SettingsDataStore(private val context: Context) {
         val SUBTITLE_TEXT_COLOR = longPreferencesKey("subtitle_text_color")
         val SUBTITLE_BG_COLOR = longPreferencesKey("subtitle_bg_color")
         val DEFAULT_ASPECT_MODE = stringPreferencesKey("default_aspect_mode")
+        val SUPABASE_SESSION = stringPreferencesKey("supabase_session")
     }
 
     val preferences: Flow<AppPreferences> = context.cinemaDataStore.data.map { prefs ->
@@ -69,6 +71,15 @@ class SettingsDataStore(private val context: Context) {
                 prefs[Keys.REFRESH_TOKEN] = refreshToken.orEmpty()
                 prefs[Keys.USER_ID] = userId
             }
+        }
+    }
+
+    suspend fun getSupabaseSession(): String? = context.cinemaDataStore.data.map { it[Keys.SUPABASE_SESSION] }.first()
+
+    suspend fun setSupabaseSession(sessionJson: String?) {
+        context.cinemaDataStore.edit { prefs ->
+            if (sessionJson.isNullOrBlank()) prefs.remove(Keys.SUPABASE_SESSION)
+            else prefs[Keys.SUPABASE_SESSION] = sessionJson
         }
     }
 

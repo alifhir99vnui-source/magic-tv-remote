@@ -24,8 +24,6 @@ import androidx.compose.material.icons.rounded.Email
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.Phone
-import androidx.compose.material.icons.rounded.Pin
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
@@ -117,7 +115,7 @@ fun AuthScreen(
 
             Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = CinemaSurface), border = BorderStroke(1.dp, CinemaSurfaceBorder), shape = RoundedCornerShape(20.dp)) {
                 Column(modifier = Modifier.padding(18.dp)) {
-                    val tabs = listOf(AuthTab.SIGN_IN to strings.tabSignIn, AuthTab.SIGN_UP to strings.tabSignUp, AuthTab.PHONE_OTP to strings.tabPhoneOtp)
+                    val tabs = listOf(AuthTab.SIGN_IN to strings.tabSignIn, AuthTab.SIGN_UP to strings.tabSignUp)
                     TabRow(
                         selectedTabIndex = tabs.indexOfFirst { it.first == state.activeTab },
                         containerColor = CinemaSurfaceElevated,
@@ -173,21 +171,6 @@ fun AuthScreen(
                             Spacer(Modifier.height(18.dp))
                             PrimaryAuthButton(strings.createAccountBtn, state.isLoading, viewModel::submitEmailSignUp)
                         }
-                        AuthTab.PHONE_OTP -> {
-                            AuthTextField(state.name, viewModel::updateName, strings.fullName, Icons.Rounded.Person)
-                            Spacer(Modifier.height(12.dp))
-                            AuthTextField(state.phone, viewModel::updatePhone, strings.phoneNumber, Icons.Rounded.Phone, KeyboardType.Phone)
-                            Spacer(Modifier.height(10.dp))
-                            OutlinedButton(onClick = viewModel::requestPhoneOtp, enabled = state.otpCountdownSec == 0 && !state.isLoading, modifier = Modifier.fillMaxWidth(), border = BorderStroke(1.dp, CinemaRed), shape = RoundedCornerShape(12.dp)) {
-                                Text(if (state.otpCountdownSec > 0) "${strings.resendOtpIn} ${state.otpCountdownSec}s" else strings.sendOtp, color = if (state.otpCountdownSec > 0) TextSecondary else CinemaRed, fontWeight = FontWeight.SemiBold)
-                            }
-                            if (state.otpSent) {
-                                Spacer(Modifier.height(12.dp))
-                                AuthTextField(state.otpEntered, viewModel::updateOtpEntered, strings.otpCode, Icons.Rounded.Pin, KeyboardType.Number)
-                                Spacer(Modifier.height(18.dp))
-                                PrimaryAuthButton(strings.verifyAndEnter, state.isLoading, viewModel::verifyPhoneOtp)
-                            }
-                        }
                     }
 
                     Spacer(Modifier.height(20.dp))
@@ -203,7 +186,7 @@ fun AuthScreen(
                         border = BorderStroke(1.dp, CinemaSurfaceBorder),
                         colors = ButtonDefaults.outlinedButtonColors(containerColor = CinemaSurfaceElevated),
                         shape = RoundedCornerShape(12.dp),
-                        enabled = AppConfig.isGoogleSignInConfigured && !state.isLoading
+                        enabled = AppConfig.isGoogleSignInConfigured && !state.isLoading && !state.oauthPending
                     ) {
                         Icon(Icons.Rounded.AccountCircle, null, tint = Color(0xFFEA4335), modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(10.dp))
@@ -211,16 +194,29 @@ fun AuthScreen(
                     }
                     Spacer(Modifier.height(10.dp))
                     OutlinedButton(
-                        onClick = { viewModel.reportError("تسجيل الدخول بفيسبوك يتطلب إعداد OAuth في Supabase", "Facebook sign-in requires Supabase OAuth configuration") },
+                        onClick = viewModel::signInWithFacebook,
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         border = BorderStroke(1.dp, Color(0xFF1877F2).copy(alpha = 0.55f)),
                         colors = ButtonDefaults.outlinedButtonColors(containerColor = Color(0xFF1877F2).copy(alpha = 0.14f)),
                         shape = RoundedCornerShape(12.dp),
-                        enabled = !state.isLoading
+                        enabled = AppConfig.isFacebookSignInConfigured && !state.isLoading && !state.oauthPending
                     ) {
                         Icon(Icons.Rounded.Public, null, tint = Color(0xFF60A5FA), modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(10.dp))
                         Text(strings.continueWithFacebook, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (state.oauthPending) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(strings.oauthWaiting, color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = viewModel::cancelOAuth,
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            border = BorderStroke(1.dp, CinemaSurfaceBorder),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(strings.cancel, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }

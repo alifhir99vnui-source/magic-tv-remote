@@ -99,6 +99,11 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.okhttp)
+
+    implementation(libs.supabase.kt)
+    implementation(libs.supabase.auth.kt)
+    implementation(libs.ktor.client.android)
+
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
