@@ -81,25 +81,10 @@ import com.aluqabi.cinema.ui.theme.TextSecondary
 fun SettingsScreen(
     strings: AppStrings,
     preferences: AppPreferences,
-    sources: List<SourceEntity>,
-    statusBanner: String?,
-    onDismissBanner: () -> Unit,
-    onSaveTmdbKey: (String) -> Unit,
-    onTestTmdbKey: (String) -> Unit,
-    onAddSource: (String, SourceType, String) -> Unit,
-    onUpdateSource: (SourceEntity, String, String) -> Unit,
-    onToggleSource: (SourceEntity, Boolean) -> Unit,
-    onSyncSource: (SourceEntity) -> Unit,
-    onSyncAllSources: () -> Unit,
-    onDeleteSource: (Long) -> Unit,
     onUpdateSubtitleDefaults: (Float, Long, Long) -> Unit,
     onSetLanguage: (String) -> Unit,
     onClearHistory: () -> Unit
 ) {
-    var apiKeyInput by remember(preferences.tmdbApiKey) { mutableStateOf(preferences.tmdbApiKey) }
-    var showAddSourceDialog by remember { mutableStateOf(false) }
-    var editingSource by remember { mutableStateOf<SourceEntity?>(null) }
-
     var fontSize by remember(preferences.subtitleFontSizeSp) { mutableFloatStateOf(preferences.subtitleFontSizeSp) }
     var textColor by remember(preferences.subtitleTextColorArgb) { mutableLongStateOf(preferences.subtitleTextColorArgb) }
     var bgColor by remember(preferences.subtitleBgColorArgb) { mutableLongStateOf(preferences.subtitleBgColorArgb) }
@@ -111,169 +96,6 @@ fun SettingsScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        if (!statusBanner.isNullOrBlank()) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = CinemaSurfaceElevated),
-                    border = BorderStroke(1.dp, CinemaEmerald.copy(alpha = 0.6f)),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onDismissBanner() }
-                ) {
-                    Text(
-                        text = statusBanner,
-                        color = TextPrimary,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(12.dp)
-                    )
-                }
-            }
-        }
-
-        // 1. TMDB API Section
-        item {
-            SettingsCard(title = strings.tmdbSectionTitle) {
-                OutlinedTextField(
-                    value = apiKeyInput,
-                    onValueChange = { apiKeyInput = it },
-                    label = { Text(strings.tmdbKeyLabel, fontSize = 12.sp) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = CinemaRed,
-                        unfocusedBorderColor = CinemaSurfaceBorder,
-                        focusedContainerColor = CinemaSurfaceElevated,
-                        unfocusedContainerColor = CinemaSurfaceElevated,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = { onSaveTmdbKey(apiKeyInput) },
-                        colors = ButtonDefaults.buttonColors(containerColor = CinemaRed),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(strings.saveKey, color = TextPrimary, fontWeight = FontWeight.Bold)
-                    }
-                    OutlinedButton(
-                        onClick = { onTestTmdbKey(apiKeyInput) },
-                        enabled = apiKeyInput.isNotBlank(),
-                        border = BorderStroke(1.dp, CinemaSurfaceBorder),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(strings.testConnection, color = TextPrimary)
-                    }
-                }
-            }
-        }
-
-        // 2. Sources Manager Header
-        item {
-            SettingsCard(title = strings.sourcesSectionTitle) {
-                Text(
-                    text = strings.jsonSchemaHint,
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp
-                )
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(
-                        onClick = { showAddSourceDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = CinemaRed),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Rounded.Add, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(strings.addSource, color = TextPrimary, fontWeight = FontWeight.Bold)
-                    }
-                    if (sources.isNotEmpty()) {
-                        OutlinedButton(
-                            onClick = onSyncAllSources,
-                            border = BorderStroke(1.dp, CinemaSurfaceBorder),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(strings.syncAll, color = TextPrimary)
-                        }
-                    }
-                }
-            }
-        }
-
-        items(sources, key = { it.id }) { source ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = CinemaSurface),
-                border = BorderStroke(1.dp, CinemaSurfaceBorder),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = source.name,
-                                color = TextPrimary,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp
-                            )
-                            Text(
-                                text = "${source.type} • ${source.itemCount} ${strings.itemsCountLabel}",
-                                color = TextSecondary,
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                text = source.url,
-                                color = TextMuted,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Switch(
-                            checked = source.isEnabled,
-                            onCheckedChange = { onToggleSource(source, it) },
-                            colors = SwitchDefaults.colors(checkedTrackColor = CinemaRed)
-                        )
-                    }
-                    if (!source.lastError.isNullOrBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = source.lastError,
-                            color = Color(0xFFFF8A8A),
-                            fontSize = 11.sp
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        IconButton(onClick = { onSyncSource(source) }) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = strings.syncNow, tint = TextPrimary)
-                        }
-                        IconButton(onClick = { editingSource = source }) {
-                            Icon(Icons.Rounded.Edit, contentDescription = null, tint = TextSecondary)
-                        }
-                        IconButton(onClick = { onDeleteSource(source.id) }) {
-                            Icon(Icons.Rounded.Delete, contentDescription = null, tint = CinemaRed)
-                        }
-                    }
-                }
-            }
-        }
-
         // 3. Subtitle Defaults
         item {
             SettingsCard(title = strings.subtitleDefaultsTitle) {
@@ -380,36 +202,6 @@ fun SettingsScreen(
         }
     }
 
-    if (showAddSourceDialog) {
-        SourceEditorDialog(
-            strings = strings,
-            initialName = "",
-            initialUrl = "",
-            initialType = SourceType.M3U_PLAYLIST,
-            allowTypeChange = true,
-            onDismiss = { showAddSourceDialog = false },
-            onConfirm = { name, type, url ->
-                onAddSource(name, type, url)
-                showAddSourceDialog = false
-            }
-        )
-    }
-
-    editingSource?.let { src ->
-        val srcType = runCatching { SourceType.valueOf(src.type) }.getOrDefault(SourceType.M3U_PLAYLIST)
-        SourceEditorDialog(
-            strings = strings,
-            initialName = src.name,
-            initialUrl = src.url,
-            initialType = srcType,
-            allowTypeChange = false,
-            onDismiss = { editingSource = null },
-            onConfirm = { name, _, url ->
-                onUpdateSource(src, name, url)
-                editingSource = null
-            }
-        )
-    }
 }
 
 @Composable

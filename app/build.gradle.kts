@@ -6,6 +6,13 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+fun resolveConfigValue(name: String, defaultValue: String): String {
+    val fromEnv = System.getenv(name)?.takeIf { it.isNotBlank() }
+    val fromProp = project.findProperty(name)?.toString()?.takeIf { it.isNotBlank() }
+    val value = (fromEnv ?: fromProp ?: defaultValue).replace("\"", "\\\"")
+    return "\"$value\""
+}
+
 android {
     namespace = "com.aluqabi.cinema"
     compileSdk = 35
@@ -15,9 +22,30 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField(
+            "String",
+            "SUPABASE_URL",
+            resolveConfigValue("SUPABASE_URL", "https://YOUR_PROJECT_REF.supabase.co")
+        )
+        buildConfigField(
+            "String",
+            "SUPABASE_ANON_KEY",
+            resolveConfigValue("SUPABASE_ANON_KEY", "YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY")
+        )
+        buildConfigField(
+            "String",
+            "TMDB_API_KEY",
+            resolveConfigValue("TMDB_API_KEY", "YOUR_TMDB_API_KEY")
+        )
+        buildConfigField(
+            "String",
+            "GOOGLE_WEB_CLIENT_ID",
+            resolveConfigValue("GOOGLE_WEB_CLIENT_ID", "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com")
+        )
     }
 
     buildTypes {
@@ -82,8 +110,12 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
 
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services)
+    implementation(libs.googleid)
+
     implementation(libs.retrofit)
-    implementation(libs.retrofit.kotlinx.serialization)
+    implementation(libs.retrofit.kotlinx-serialization)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)

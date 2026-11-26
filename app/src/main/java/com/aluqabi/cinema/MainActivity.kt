@@ -58,6 +58,7 @@ import com.aluqabi.cinema.ui.screens.SearchScreen
 import com.aluqabi.cinema.ui.screens.SeriesScreen
 import com.aluqabi.cinema.ui.screens.SettingsScreen
 import com.aluqabi.cinema.ui.theme.AlUqabiCinemaTheme
+import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.ui.theme.CinemaBackground
 import com.aluqabi.cinema.ui.theme.CinemaRed
 import com.aluqabi.cinema.ui.theme.CinemaSurface
@@ -348,7 +349,7 @@ private fun MainCinemaApp(
                         .fillMaxSize()
                         .padding(innerPadding)
                 ) {
-                    val hasTmdbKey = preferences.tmdbApiKey.isNotBlank()
+                    val hasTmdbKey = AppConfig.isTmdbConfigured || preferences.tmdbApiKey.isNotBlank()
                     when (currentTab) {
                         BottomTab.HOME -> HomeScreen(
                             strings = strings,
@@ -393,17 +394,6 @@ private fun MainCinemaApp(
                         BottomTab.SETTINGS -> SettingsScreen(
                             strings = strings,
                             preferences = preferences,
-                            sources = sources,
-                            statusBanner = statusBanner,
-                            onDismissBanner = cinemaViewModel::clearBanner,
-                            onSaveTmdbKey = cinemaViewModel::saveTmdbApiKey,
-                            onTestTmdbKey = cinemaViewModel::testTmdbKey,
-                            onAddSource = cinemaViewModel::addSource,
-                            onUpdateSource = cinemaViewModel::updateSource,
-                            onToggleSource = cinemaViewModel::toggleSource,
-                            onSyncSource = cinemaViewModel::syncSource,
-                            onSyncAllSources = cinemaViewModel::syncAllSources,
-                            onDeleteSource = cinemaViewModel::deleteSource,
                             onUpdateSubtitleDefaults = cinemaViewModel::updateSubtitleDefaults,
                             onSetLanguage = cinemaViewModel::setLanguage,
                             onClearHistory = cinemaViewModel::clearHistory

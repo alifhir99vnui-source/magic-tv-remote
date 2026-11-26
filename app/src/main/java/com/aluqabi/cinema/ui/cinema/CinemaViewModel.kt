@@ -3,6 +3,7 @@ package com.aluqabi.cinema.ui.cinema
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.data.local.AppPreferences
 import com.aluqabi.cinema.data.local.SettingsDataStore
 import com.aluqabi.cinema.data.local.entity.FavoriteEntity
@@ -124,12 +125,13 @@ class CinemaViewModel(
     init {
         viewModelScope.launch {
             preferences.collect { prefs ->
-                if (prefs.tmdbApiKey.isNotBlank() &&
-                    (prefs.tmdbApiKey != lastLoadedApiKey || prefs.languageCode != lastLoadedLang)
+                val apiKey = AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey }
+                if (apiKey.isNotBlank() &&
+                    (apiKey != lastLoadedApiKey || prefs.languageCode != lastLoadedLang)
                 ) {
-                    lastLoadedApiKey = prefs.tmdbApiKey
+                    lastLoadedApiKey = apiKey
                     lastLoadedLang = prefs.languageCode
-                    refreshTmdbCatalog(prefs.tmdbApiKey, prefs.languageCode)
+                    refreshTmdbCatalog(apiKey, prefs.languageCode)
                 }
             }
         }
@@ -140,7 +142,7 @@ class CinemaViewModel(
     }
 
     fun refreshTmdbCatalog(
-        apiKey: String = preferences.value.tmdbApiKey,
+        apiKey: String = AppConfig.TMDB_API_KEY.ifBlank { preferences.value.tmdbApiKey },
         languageCode: String = preferences.value.languageCode
     ) {
         if (apiKey.isBlank()) return
@@ -174,9 +176,9 @@ class CinemaViewModel(
     fun selectMovieGenre(genreId: Int?) {
         _catalogState.update { it.copy(selectedMovieGenreId = genreId) }
         val prefs = preferences.value
-        if (prefs.tmdbApiKey.isBlank()) return
+        if (AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey }.isBlank()) return
         viewModelScope.launch {
-            val movies = catalogRepository.fetchPopularMovies(prefs.tmdbApiKey, prefs.languageCode, genreId)
+            val movies = catalogRepository.fetchPopularMovies(AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey }, prefs.languageCode, genreId)
                 .getOrDefault(emptyList())
             _catalogState.update { it.copy(popularMovies = movies) }
         }
@@ -185,9 +187,9 @@ class CinemaViewModel(
     fun selectSeriesGenre(genreId: Int?) {
         _catalogState.update { it.copy(selectedSeriesGenreId = genreId) }
         val prefs = preferences.value
-        if (prefs.tmdbApiKey.isBlank()) return
+        if (AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey }.isBlank()) return
         viewModelScope.launch {
-            val series = catalogRepository.fetchPopularSeries(prefs.tmdbApiKey, prefs.languageCode, genreId)
+            val series = catalogRepository.fetchPopularSeries(AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey }, prefs.languageCode, genreId)
                 .getOrDefault(emptyList())
             _catalogState.update { it.copy(popularSeries = series) }
         }
@@ -197,7 +199,7 @@ class CinemaViewModel(
         val prefs = preferences.value
         viewModelScope.launch {
             _isSearching.value = true
-            _searchResults.value = catalogRepository.searchCatalog(prefs.tmdbApiKey, prefs.languageCode, query)
+            _searchResults.value = catalogRepository.searchCatalog(AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey }, prefs.languageCode, query)
             _isSearching.value = false
         }
     }
@@ -208,7 +210,7 @@ class CinemaViewModel(
             _detailState.value = DetailUiState(isLoading = true)
             if (card.mediaType == MediaType.MOVIE) {
                 val bundle = catalogRepository.getMovieDetails(
-                    apiKey = prefs.tmdbApiKey,
+                    apiKey = AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey },
                     languageCode = prefs.languageCode,
                     tmdbId = card.tmdbId,
                     fallbackCard = card
@@ -227,7 +229,7 @@ class CinemaViewModel(
                 )
             } else {
                 val bundle = catalogRepository.getSeriesDetails(
-                    apiKey = prefs.tmdbApiKey,
+                    apiKey = AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey },
                     languageCode = prefs.languageCode,
                     tmdbId = card.tmdbId,
                     fallbackCard = card
@@ -240,7 +242,7 @@ class CinemaViewModel(
                     isLoadingEpisodes = true
                 )
                 val episodes = catalogRepository.getSeasonEpisodes(
-                    apiKey = prefs.tmdbApiKey,
+                    apiKey = AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey },
                     languageCode = prefs.languageCode,
                     seriesCard = bundle.card,
                     seasonNumber = firstSeason
@@ -258,7 +260,7 @@ class CinemaViewModel(
         viewModelScope.launch {
             _detailState.update { it.copy(selectedSeason = seasonNumber, isLoadingEpisodes = true) }
             val episodes = catalogRepository.getSeasonEpisodes(
-                apiKey = prefs.tmdbApiKey,
+                apiKey = AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey },
                 languageCode = prefs.languageCode,
                 seriesCard = seriesCard,
                 seasonNumber = seasonNumber
@@ -310,7 +312,7 @@ class CinemaViewModel(
                 subtitleUrl = subtitleUrl
             )
             val episodes = catalogRepository.getSeasonEpisodes(
-                apiKey = prefs.tmdbApiKey,
+                apiKey = AppConfig.TMDB_API_KEY.ifBlank { prefs.tmdbApiKey },
                 languageCode = prefs.languageCode,
                 seriesCard = seriesCard,
                 seasonNumber = seasonNumber
