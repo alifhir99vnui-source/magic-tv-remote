@@ -25,28 +25,48 @@ if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
   exit 1
 fi
 
-accept_sdk_licenses() {
-  local sdkmanager="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/cmdline-tools/latest/bin/sdkmanager"
-  if [[ ! -x "$sdkmanager" ]]; then
-    sdkmanager="$(command -v sdkmanager || true)"
+SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+CMDLINE_TOOLS_VERSION="12266719"
+CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip"
+
+setup_android_sdk() {
+  local sdkmanager="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+  if [[ ! -x "$sdkmanager" ]] || ! "$sdkmanager" --version >/dev/null 2>&1; then
+    if [[ "$(uname -s)" != "Linux" || "$ARCH" != "x86_64" ]]; then
+      echo "Install Android cmdline-tools 16.0 manually for this platform, or set ANDROID_HOME to a working SDK." >&2
+      return 1
+    fi
+    command -v curl >/dev/null || { echo "curl is required to install Android cmdline-tools." >&2; return 1; }
+    command -v unzip >/dev/null || { echo "unzip is required to install Android cmdline-tools." >&2; return 1; }
+    mkdir -p "$SDK_ROOT/cmdline-tools"
+    rm -rf "$SDK_ROOT/cmdline-tools/latest" "$SDK_ROOT/cmdline-tools/latest.zip"
+    curl -fsSL "$CMDLINE_TOOLS_URL" -o "$SDK_ROOT/cmdline-tools/latest.zip"
+    unzip -q "$SDK_ROOT/cmdline-tools/latest.zip" -d "$SDK_ROOT/cmdline-tools"
+    mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+    rm -f "$SDK_ROOT/cmdline-tools/latest.zip"
   fi
-  if [[ -z "$sdkmanager" || ! -x "$sdkmanager" ]]; then
-    echo "sdkmanager was not found in the Android SDK." >&2
+  chmod +x "$sdkmanager"
+  if ! "$sdkmanager" --version >/dev/null 2>&1; then
+    echo "sdkmanager is not usable from $sdkmanager." >&2
     return 1
   fi
   set +e
   set +o pipefail
-  yes | "$sdkmanager" --licenses >/dev/null 2>&1
-  local sdk_status=${PIPESTATUS[1]}
+  yes 2>/dev/null | "$sdkmanager" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1
+  local license_status=${PIPESTATUS[1]}
   set -o pipefail
   set -e
-  if [[ "$sdk_status" -ne 0 ]]; then
+  if [[ "$license_status" -ne 0 ]]; then
     echo "Failed to accept Android SDK licenses." >&2
-    return "$sdk_status"
+    return "$license_status"
   fi
+  "$sdkmanager" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+  export ANDROID_HOME="$SDK_ROOT"
+  export ANDROID_SDK_ROOT="$SDK_ROOT"
+  export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$SDK_ROOT/platform-tools:$PATH"
 }
 
-accept_sdk_licenses
+setup_android_sdk
 
 value_from_properties() {
   [[ -f local.properties ]] || return 0

@@ -26,39 +26,46 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses
+      - name: Install Android SDK and accept licenses
         shell: bash
         run: |
-          SDKMANAGER="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/cmdline-tools/latest/bin/sdkmanager"
-          if [[ ! -x "$SDKMANAGER" ]]; then
-            SDKMANAGER="$(command -v sdkmanager || true)"
+          set -euo pipefail
+          SDK_ROOT="${RUNNER_TEMP:-/tmp}/android-sdk"
+          CMDLINE_TOOLS_VERSION="12266719"
+          CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$SDKMANAGER" ]] || ! "$SDKMANAGER" --version >/dev/null 2>&1; then
+            rm -rf "$SDK_ROOT/cmdline-tools/latest" "$SDK_ROOT/cmdline-tools/latest.zip"
+            curl -fsSL "$CMDLINE_TOOLS_URL" -o "$SDK_ROOT/cmdline-tools/latest.zip"
+            unzip -q "$SDK_ROOT/cmdline-tools/latest.zip" -d "$SDK_ROOT/cmdline-tools"
+            mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+            rm -f "$SDK_ROOT/cmdline-tools/latest.zip"
           fi
-          if [[ -z "$SDKMANAGER" || ! -x "$SDKMANAGER" ]]; then
-            echo "sdkmanager was not found in the Android SDK." >&2
+          chmod +x "$SDKMANAGER"
+          if ! "$SDKMANAGER" --version >/dev/null 2>&1; then
+            echo "sdkmanager is not usable from $SDKMANAGER." >&2
             exit 1
           fi
           set +e
           set +o pipefail
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1
-          sdk_status=${PIPESTATUS[1]}
+          yes 2>/dev/null | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1
+          license_status=${PIPESTATUS[1]}
           set -o pipefail
           set -e
-          if [[ "$sdk_status" -ne 0 ]]; then
+          if [[ "$license_status" -ne 0 ]]; then
             echo "Failed to accept Android SDK licenses." >&2
-            exit "$sdk_status"
+            exit "$license_status"
           fi
-
-      - name: Install Android SDK 35
-        shell: bash
-        run: |
-          SDKMANAGER="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/cmdline-tools/latest/bin/sdkmanager"
-          if [[ ! -x "$SDKMANAGER" ]]; then
-            SDKMANAGER="$(command -v sdkmanager || true)"
-          fi
-          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          {
+            echo "ANDROID_HOME=$SDK_ROOT"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
+          } >> "$GITHUB_ENV"
+          {
+            echo "$SDK_ROOT/cmdline-tools/latest/bin"
+            echo "$SDK_ROOT/platform-tools"
+          } >> "$GITHUB_PATH"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
