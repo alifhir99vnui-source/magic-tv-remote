@@ -27,11 +27,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -57,9 +52,9 @@ fun SettingsScreen(
     onClearHistory: () -> Unit,
     onClearCache: () -> Unit
 ) {
-    var fontSize by remember(preferences.subtitleFontSizeSp) { mutableFloatStateOf(preferences.subtitleFontSizeSp) }
-    var textColor by remember(preferences.subtitleTextColorArgb) { mutableLongStateOf(preferences.subtitleTextColorArgb) }
-    var bgColor by remember(preferences.subtitleBgColorArgb) { mutableLongStateOf(preferences.subtitleBgColorArgb) }
+    val fontSize = preferences.subtitleFontSizeSp.coerceIn(12f, 32f)
+    val textColor = preferences.subtitleTextColorArgb
+    val bgColor = preferences.subtitleBgColorArgb
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(CinemaBackground),
@@ -71,7 +66,7 @@ fun SettingsScreen(
                 Text(text = "${strings.fontSizeLabel}: ${fontSize.toInt()} sp", color = TextSecondary, fontSize = 13.sp)
                 Slider(
                     value = fontSize,
-                    onValueChange = { fontSize = it; onUpdateSubtitleDefaults(it, textColor, bgColor) },
+                    onValueChange = { onUpdateSubtitleDefaults(it.coerceIn(12f, 32f), textColor, bgColor) },
                     valueRange = 12f..32f,
                     colors = SliderDefaults.colors(thumbColor = CinemaRed, activeTrackColor = CinemaRed)
                 )
@@ -82,7 +77,7 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier.size(30.dp).clip(CircleShape).background(Color(hex))
                                 .then(if (textColor == hex) Modifier.border(2.dp, CinemaRed, CircleShape) else Modifier)
-                                .clickable { textColor = hex; onUpdateSubtitleDefaults(fontSize, hex, bgColor) }
+                                .clickable { onUpdateSubtitleDefaults(fontSize, hex, bgColor) }
                         )
                     }
                 }
@@ -94,7 +89,7 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier.size(30.dp).clip(CircleShape).background(Color(hex))
                                 .border(if (bgColor == hex) 2.dp else 1.dp, if (bgColor == hex) CinemaRed else CinemaSurfaceBorder, CircleShape)
-                                .clickable { bgColor = hex; onUpdateSubtitleDefaults(fontSize, textColor, hex) }
+                                .clickable { onUpdateSubtitleDefaults(fontSize, textColor, hex) }
                         )
                     }
                 }

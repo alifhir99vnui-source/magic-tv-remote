@@ -264,7 +264,7 @@ fun SubtitlesManagerSheet(
                     colors = ButtonDefaults.buttonColors(containerColor = CinemaRed),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text(strings.addSource, color = TextPrimary, fontSize = 12.sp)
+                    Text(strings.add, color = TextPrimary, fontSize = 12.sp)
                 }
             }
 

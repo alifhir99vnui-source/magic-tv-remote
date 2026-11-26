@@ -4,7 +4,6 @@ import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.data.local.PasswordHasher
 import com.aluqabi.cinema.data.local.SettingsDataStore
 import com.aluqabi.cinema.data.remote.SupabaseClient
-import com.aluqabi.cinema.data.remote.arr
 import com.aluqabi.cinema.data.remote.asArrOrEmpty
 import com.aluqabi.cinema.data.remote.asObjOrNull
 import com.aluqabi.cinema.data.remote.bool
@@ -43,7 +42,15 @@ class AuthRepository(
     suspend fun refreshCurrentProfile(): UserProfile? {
         val prefs = settingsDataStore.preferences.first()
         if (!prefs.isLoggedIn) return null
-        return fetchProfile(prefs.userId, prefs.accessToken).getOrNull()
+        val first = fetchProfile(prefs.userId, prefs.accessToken)
+        if (first.isSuccess) return first.getOrNull()
+        if (refreshAccessToken()) {
+            val refreshedPrefs = settingsDataStore.preferences.first()
+            if (refreshedPrefs.isLoggedIn) {
+                return fetchProfile(refreshedPrefs.userId, refreshedPrefs.accessToken).getOrNull()
+            }
+        }
+        return null
     }
 
 
@@ -104,11 +111,20 @@ class AuthRepository(
         )
     }
 
-    suspend fun sendPhoneOtp(phone: String): AuthResult {
+    suspend fun sendPhoneOtp(phone: String, name: String = ""): AuthResult {
         val cleanPhone = PasswordHasher.normalizePhone(phone)
         if (!PasswordHasher.isValidPhone(cleanPhone)) return AuthResult.Error("رقم الهاتف غير صالح", "Invalid phone number")
         if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
-        val res = supabase.authPost("/auth/v1/otp", buildJsonObject { put("phone", cleanPhone) })
+        val res = supabase.authPost(
+            "/auth/v1/otp",
+            buildJsonObject {
+                put("phone", cleanPhone)
+                val cleanName = name.trim()
+                if (cleanName.isNotBlank()) {
+                    put("data", buildJsonObject { put("name", cleanName) })
+                }
+            }
+        )
         return res.fold(
             onSuccess = { AuthResult.Info("تم إرسال رمز التحقق عبر SMS", "SMS verification code sent") },
             onFailure = { AuthResult.Error(it.message ?: "تعذر إرسال الرمز", it.message ?: "Could not send code") }
@@ -126,12 +142,20 @@ class AuthRepository(
                 put("phone", cleanPhone)
                 put("token", cleanCode)
                 put("type", "sms")
-                put("data", buildJsonObject { put("name", name.trim().ifBlank { cleanPhone }) })
             }
         )
         return res.fold(
             onSuccess = { obj ->
                 saveSessionFromAuth(obj)
+                val prefs = settingsDataStore.preferences.first()
+                val displayName = name.trim().ifBlank { cleanPhone }
+                if (prefs.isLoggedIn) {
+                    supabase.restPatch(
+                        "profiles?id=eq.${prefs.userId}",
+                        buildJsonObject { put("name", displayName) },
+                        prefs.accessToken
+                    )
+                }
                 val profile = refreshCurrentProfile()
                 if (profile != null) AuthResult.Success(profile)
                 else AuthResult.Error("تم التحقق لكن تعذر تحميل الملف الشخصي", "Verified but failed to load profile")
@@ -165,9 +189,28 @@ class AuthRepository(
         settingsDataStore.setSession(null, null, null)
     }
 
+    suspend fun refreshAccessToken(): Boolean {
+        val prefs = settingsDataStore.preferences.first()
+        val refreshToken = prefs.refreshToken
+        if (refreshToken.isBlank()) return false
+        if (!AppConfig.isSupabaseConfigured) return false
+        val res = supabase.authPost(
+            "/auth/v1/token?grant_type=refresh_token",
+            buildJsonObject { put("refresh_token", refreshToken) }
+        )
+        return res.fold(
+            onSuccess = { obj ->
+                saveSessionFromAuth(obj)
+                settingsDataStore.preferences.first().isLoggedIn
+            },
+            onFailure = { false }
+        )
+    }
+
     private suspend fun saveSessionFromAuth(obj: JsonObject) {
         val accessToken = obj.str("access_token")
-        val refreshToken = obj.str("refresh_token")
+        val previousRefreshToken = settingsDataStore.preferences.first().refreshToken
+        val refreshToken = obj.str("refresh_token").ifBlank { previousRefreshToken }
         val user = obj["user"]?.asObjOrNull()
         val userId = user?.str("id").orEmpty().ifBlank { obj.str("user_id") }
         if (accessToken.isNotBlank() && userId.isNotBlank()) {
@@ -240,12 +283,18 @@ class AuthRepository(
     suspend fun adminSearchUsers(query: String): Result<List<UserProfile>> {
         val prefs = settingsDataStore.preferences.first()
         if (!prefs.isLoggedIn) return Result.failure(IllegalStateException("Not signed in"))
-        val q = query.trim()
-        val filter = if (q.isBlank()) "select=*&order=created_at.desc&limit=50"
-        else "select=*&or=(email.ilike.*$q*,name.ilike.*$q*,phone.ilike.*$q*)&order=created_at.desc&limit=50"
-        return supabase.restGet("profiles?$filter", prefs.accessToken).map { el ->
-            el.asArrOrEmpty().mapNotNull { it.asObjOrNull()?.toProfile() }
+        var activePrefs = prefs
+        var current = fetchProfile(activePrefs.userId, activePrefs.accessToken).getOrNull()
+        if (current == null && refreshAccessToken()) {
+            activePrefs = settingsDataStore.preferences.first()
+            current = if (activePrefs.isLoggedIn) fetchProfile(activePrefs.userId, activePrefs.accessToken).getOrNull() else null
         }
+        if (current?.isAdmin != true) return Result.failure(IllegalStateException("Admin access required"))
+        return supabase.rpc(
+            "search_profiles",
+            buildJsonObject { put("search_text", query.trim()) },
+            activePrefs.accessToken
+        ).map { el -> el.asArrOrEmpty().mapNotNull { it.asObjOrNull()?.toProfile() } }
     }
 
     suspend fun adminSetRole(userId: String, role: UserRole): Result<Unit> {

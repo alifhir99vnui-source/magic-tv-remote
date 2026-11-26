@@ -30,6 +30,8 @@ import com.aluqabi.cinema.domain.model.StreamQualityOption
 import com.aluqabi.cinema.domain.model.UserProfile
 import com.aluqabi.cinema.domain.model.UserRole
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,6 +42,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class CatalogUiState(
@@ -82,10 +85,8 @@ class CinemaViewModel(
     private val _currentProfile = MutableStateFlow<UserProfile?>(null)
     val currentProfile: StateFlow<UserProfile?> = _currentProfile.asStateFlow()
 
-    // compatibility for old screens while migrating
-    val currentUser: StateFlow<UserEntity?> = _currentProfile.combine(preferences) { p, _ ->
-        p?.let { UserEntity(id = 0, name = it.name, email = it.email, phone = it.phone, authProvider = "SUPABASE", avatarColorHex = it.avatarColor) }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    private val _authLoading = MutableStateFlow(true)
+    val authLoading: StateFlow<Boolean> = _authLoading.asStateFlow()
 
     val sources: StateFlow<List<SourceEntity>> = sourcesRepository.sources
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -124,18 +125,32 @@ class CinemaViewModel(
 
     private var lastLoadedLang: String? = null
     private var lastLoadedUserId: String? = null
+    private var lastAttemptedUserId: String? = null
+    private var authAttemptToken = 0
+    private var searchJob: Job? = null
 
     init {
         viewModelScope.launch {
-            preferences.collect { prefs ->
-                if (prefs.userId.isNotBlank() && prefs.userId != lastLoadedUserId) {
-                    lastLoadedUserId = prefs.userId
-                    refreshCurrentProfile()
-                    refreshCloudContent()
-                    catalogRepository.syncCloudFavorites(prefs.userId)
-                } else if (prefs.userId.isBlank()) {
-                    _currentProfile.value = null
+            settingsDataStore.preferences.collect { prefs ->
+                if (prefs.userId.isBlank()) {
+                    lastAttemptedUserId = null
                     lastLoadedUserId = null
+                    authAttemptToken++
+                    _authLoading.value = false
+                    _currentProfile.value = null
+                } else if (prefs.userId != lastAttemptedUserId) {
+                    lastAttemptedUserId = prefs.userId
+                    val token = ++authAttemptToken
+                    viewModelScope.launch {
+                        _authLoading.value = true
+                        try {
+                            refreshCurrentProfile()
+                        } finally {
+                            if (token == authAttemptToken) _authLoading.value = false
+                        }
+                    }
+                    refreshCloudContent()
+                    runCatching { catalogRepository.syncCloudFavorites(prefs.userId) }.onFailure { _statusBanner.value = it.message }
                 }
                 if (prefs.languageCode != lastLoadedLang) {
                     lastLoadedLang = prefs.languageCode
@@ -143,57 +158,96 @@ class CinemaViewModel(
                 }
             }
         }
-        refreshTmdbCatalog()
     }
 
-    fun refreshCurrentProfile() {
-        viewModelScope.launch { _currentProfile.value = authRepository.refreshCurrentProfile() }
+    suspend fun refreshCurrentProfile(): UserProfile? {
+        repeat(3) { attempt ->
+            val profile = runCatching { authRepository.refreshCurrentProfile() }.getOrNull()
+            if (profile != null) {
+                _currentProfile.value = profile
+                lastLoadedUserId = preferences.value.userId.ifBlank { profile.id }
+                return profile
+            }
+            if (attempt < 2) delay(300)
+        }
+        return null
     }
 
-    fun refreshCloudContent() {
-        viewModelScope.launch { sourcesRepository.refreshCloudContent() }
+    suspend fun verifyAdminAccess(): Boolean {
+        val profile = refreshCurrentProfile() ?: return false
+        return profile.role == UserRole.ADMIN && !profile.isBanned
     }
+
+    private fun adminDeniedError() = IllegalStateException(
+        if (preferences.value.languageCode == "ar") "صلاحية المطور مطلوبة" else "Admin access required"
+    )
+
+    suspend fun refreshCloudContent(): Result<Unit> = sourcesRepository.refreshCloudContent()
+        .onFailure { _statusBanner.value = it.message }
 
     fun clearBanner() { _statusBanner.value = null }
 
-    fun refreshTmdbCatalog(apiKey: String = AppConfig.TMDB_API_KEY, languageCode: String = preferences.value.languageCode) {
-        if (apiKey.isBlank()) return
+    fun clearTmdbStatusMessage() { _catalogState.update { it.copy(tmdbStatusMessage = null) } }
+
+    private fun tmdbKey(): String = if (AppConfig.isTmdbConfigured) AppConfig.TMDB_API_KEY else ""
+
+    fun refreshTmdbCatalog(apiKey: String = tmdbKey(), languageCode: String = preferences.value.languageCode) {
+        if (!AppConfig.isTmdbConfigured || apiKey.isBlank()) return
         viewModelScope.launch {
             _catalogState.update { it.copy(isLoadingHome = true, tmdbStatusMessage = null) }
-            val trending = catalogRepository.fetchTrending(apiKey, languageCode).getOrDefault(emptyList())
-            val popMovies = catalogRepository.fetchPopularMovies(apiKey, languageCode, _catalogState.value.selectedMovieGenreId).getOrDefault(emptyList())
-            val topMovies = catalogRepository.fetchTopRatedMovies(apiKey, languageCode).getOrDefault(emptyList())
-            val popSeries = catalogRepository.fetchPopularSeries(apiKey, languageCode, _catalogState.value.selectedSeriesGenreId).getOrDefault(emptyList())
-            val topSeries = catalogRepository.fetchTopRatedSeries(apiKey, languageCode).getOrDefault(emptyList())
+            val trending = catalogRepository.fetchTrending(apiKey, languageCode)
+            val popMovies = catalogRepository.fetchPopularMovies(apiKey, languageCode, _catalogState.value.selectedMovieGenreId)
+            val topMovies = catalogRepository.fetchTopRatedMovies(apiKey, languageCode)
+            val popSeries = catalogRepository.fetchPopularSeries(apiKey, languageCode, _catalogState.value.selectedSeriesGenreId)
+            val topSeries = catalogRepository.fetchTopRatedSeries(apiKey, languageCode)
             val movieGenres = catalogRepository.fetchMovieGenres(apiKey, languageCode)
             val seriesGenres = catalogRepository.fetchSeriesGenres(apiKey, languageCode)
-            _catalogState.update { it.copy(isLoadingHome = false, trending = trending, popularMovies = popMovies, topRatedMovies = topMovies, popularSeries = popSeries, topRatedSeries = topSeries, movieGenres = movieGenres, seriesGenres = seriesGenres) }
+            val errorMessage = listOf(trending, popMovies, topMovies, popSeries, topSeries)
+                .mapNotNull { it.exceptionOrNull()?.message }
+                .firstOrNull()
+            _catalogState.update {
+                it.copy(
+                    isLoadingHome = false,
+                    trending = trending.getOrDefault(emptyList()),
+                    popularMovies = popMovies.getOrDefault(emptyList()),
+                    topRatedMovies = topMovies.getOrDefault(emptyList()),
+                    popularSeries = popSeries.getOrDefault(emptyList()),
+                    topRatedSeries = topSeries.getOrDefault(emptyList()),
+                    movieGenres = movieGenres,
+                    seriesGenres = seriesGenres,
+                    tmdbStatusMessage = errorMessage
+                )
+            }
         }
     }
 
     fun selectMovieGenre(genreId: Int?) {
         _catalogState.update { it.copy(selectedMovieGenreId = genreId) }
-        if (AppConfig.TMDB_API_KEY.isBlank()) return
+        if (!AppConfig.isTmdbConfigured) return
         viewModelScope.launch {
-            val movies = catalogRepository.fetchPopularMovies(AppConfig.TMDB_API_KEY, preferences.value.languageCode, genreId).getOrDefault(emptyList())
+            val movies = catalogRepository.fetchPopularMovies(tmdbKey(), preferences.value.languageCode, genreId).getOrDefault(emptyList())
             _catalogState.update { it.copy(popularMovies = movies) }
         }
     }
 
     fun selectSeriesGenre(genreId: Int?) {
         _catalogState.update { it.copy(selectedSeriesGenreId = genreId) }
-        if (AppConfig.TMDB_API_KEY.isBlank()) return
+        if (!AppConfig.isTmdbConfigured) return
         viewModelScope.launch {
-            val series = catalogRepository.fetchPopularSeries(AppConfig.TMDB_API_KEY, preferences.value.languageCode, genreId).getOrDefault(emptyList())
+            val series = catalogRepository.fetchPopularSeries(tmdbKey(), preferences.value.languageCode, genreId).getOrDefault(emptyList())
             _catalogState.update { it.copy(popularSeries = series) }
         }
     }
 
     fun performSearch(query: String) {
-        viewModelScope.launch {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             _isSearching.value = true
-            _searchResults.value = catalogRepository.searchCatalog(AppConfig.TMDB_API_KEY, preferences.value.languageCode, query)
-            _isSearching.value = false
+            val results = catalogRepository.searchCatalog(tmdbKey(), preferences.value.languageCode, query)
+            if (isActive) {
+                _searchResults.value = results
+                _isSearching.value = false
+            }
         }
     }
 
@@ -202,18 +256,18 @@ class CinemaViewModel(
         viewModelScope.launch {
             _detailState.value = DetailUiState(isLoading = true)
             if (card.mediaType == MediaType.MOVIE) {
-                val bundle = catalogRepository.getMovieDetails(AppConfig.TMDB_API_KEY, prefs.languageCode, card.tmdbId, card)
+                val bundle = catalogRepository.getMovieDetails(tmdbKey(), prefs.languageCode, card.tmdbId, card)
                 val resolved = sourcesRepository.resolvePlayback(MediaType.MOVIE, bundle.card.tmdbId, bundle.card.title, bundle.card.originalTitle, fallbackKey = bundle.card.mediaKey)
                 val reactions = catalogRepository.fetchReactions(bundle.card.mediaKey)
                 val comments = catalogRepository.fetchComments(bundle.card.mediaKey)
                 _detailState.value = DetailUiState(isLoading = false, movieDetail = bundle, resolvedMoviePlayback = resolved, reactions = reactions, comments = comments)
             } else {
-                val bundle = catalogRepository.getSeriesDetails(AppConfig.TMDB_API_KEY, prefs.languageCode, card.tmdbId, card)
+                val bundle = catalogRepository.getSeriesDetails(tmdbKey(), prefs.languageCode, card.tmdbId, card)
                 val firstSeason = bundle.seasons.firstOrNull()?.seasonNumber ?: 1
                 val reactions = catalogRepository.fetchReactions(bundle.card.mediaKey)
                 val comments = catalogRepository.fetchComments(bundle.card.mediaKey)
                 _detailState.value = DetailUiState(isLoading = false, seriesDetail = bundle, selectedSeason = firstSeason, isLoadingEpisodes = true, reactions = reactions, comments = comments)
-                val episodes = catalogRepository.getSeasonEpisodes(AppConfig.TMDB_API_KEY, prefs.languageCode, bundle.card, firstSeason)
+                val episodes = catalogRepository.getSeasonEpisodes(tmdbKey(), prefs.languageCode, bundle.card, firstSeason)
                 _detailState.update { it.copy(episodes = episodes, isLoadingEpisodes = false) }
             }
         }
@@ -232,6 +286,7 @@ class CinemaViewModel(
             val current = _detailState.value.reactions.myReaction
             val next = if (current == reactionType) null else reactionType
             catalogRepository.setReaction(card.mediaKey, next).onSuccess { state -> _detailState.update { it.copy(reactions = state) } }
+                .onFailure { _statusBanner.value = it.message }
         }
     }
 
@@ -255,7 +310,7 @@ class CinemaViewModel(
         val prefs = preferences.value
         viewModelScope.launch {
             _detailState.update { it.copy(selectedSeason = seasonNumber, isLoadingEpisodes = true) }
-            val episodes = catalogRepository.getSeasonEpisodes(AppConfig.TMDB_API_KEY, prefs.languageCode, seriesCard, seasonNumber)
+            val episodes = catalogRepository.getSeasonEpisodes(tmdbKey(), prefs.languageCode, seriesCard, seasonNumber)
             _detailState.update { it.copy(episodes = episodes, isLoadingEpisodes = false) }
         }
     }
@@ -272,7 +327,7 @@ class CinemaViewModel(
         val prefs = preferences.value
         viewModelScope.launch {
             sourcesRepository.saveManualLinkOverride(MediaType.SERIES, seriesCard.tmdbId, seriesCard.mediaKey, seasonNumber, episodeNumber, streamUrl, subtitleUrl)
-            val episodes = catalogRepository.getSeasonEpisodes(AppConfig.TMDB_API_KEY, prefs.languageCode, seriesCard, seasonNumber)
+            val episodes = catalogRepository.getSeasonEpisodes(tmdbKey(), prefs.languageCode, seriesCard, seasonNumber)
             _detailState.update { it.copy(episodes = episodes) }
         }
     }
@@ -305,7 +360,10 @@ class CinemaViewModel(
 
     fun toggleFavorite(card: MediaCardItem, isFav: Boolean) {
         val userId = _currentProfile.value?.id ?: return
-        viewModelScope.launch { catalogRepository.toggleFavoriteCloud(userId, card, isFav) }
+        viewModelScope.launch {
+            runCatching { catalogRepository.toggleFavoriteCloud(userId, card, isFav) }
+                .onFailure { _statusBanner.value = it.message }
+        }
     }
 
     fun saveWatchProgress(request: PlayerLaunchRequest, activeStreamUrl: String, positionMs: Long, durationMs: Long) {
@@ -316,7 +374,7 @@ class CinemaViewModel(
     fun setLanguage(languageCode: String) { viewModelScope.launch { settingsDataStore.setLanguageCode(languageCode) } }
     fun updateSubtitleDefaults(fontSizeSp: Float, textColorArgb: Long, bgColorArgb: Long) { viewModelScope.launch { settingsDataStore.updateSubtitleStyle(fontSizeSp, textColorArgb, bgColorArgb) } }
     fun clearHistory() { val userId = _currentProfile.value?.id ?: return; viewModelScope.launch { catalogRepository.clearWatchHistory(userId); _statusBanner.value = if (preferences.value.languageCode == "ar") "تم مسح سجل المشاهدة" else "Watch history cleared" } }
-    fun clearCache() { viewModelScope.launch { refreshCloudContent(); _statusBanner.value = if (preferences.value.languageCode == "ar") "تم مسح الذاكرة المؤقتة وتحديث المحتوى" else "Cache cleared and content refreshed" } }
+    fun clearCache() { viewModelScope.launch { refreshCloudContent().onSuccess { _statusBanner.value = if (preferences.value.languageCode == "ar") "تم مسح الذاكرة المؤقتة وتحديث المحتوى" else "Cache cleared and content refreshed" } } }
     fun logout() { viewModelScope.launch { authRepository.signOut(); _currentProfile.value = null } }
 
     fun updateProfile(newName: String, newEmail: String?, newPhone: String?, avatarColor: Long, onResult: (AuthResult) -> Unit) {
@@ -328,15 +386,108 @@ class CinemaViewModel(
     }
 
     // Admin
-    fun adminSearchUsers(query: String, onResult: (Result<List<UserProfile>>) -> Unit) { viewModelScope.launch { onResult(authRepository.adminSearchUsers(query)) } }
-    fun adminSetRole(userId: String, role: UserRole, onDone: (Result<Unit>) -> Unit) { viewModelScope.launch { onDone(authRepository.adminSetRole(userId, role)) } }
-    fun adminSetBanned(userId: String, banned: Boolean, onDone: (Result<Unit>) -> Unit) { viewModelScope.launch { onDone(authRepository.adminSetBanned(userId, banned)) } }
-    fun adminListCatalog(onResult: (Result<List<kotlinx.serialization.json.JsonObject>>) -> Unit) { viewModelScope.launch { onResult(sourcesRepository.adminListCatalog()) } }
-    fun adminListChannels(onResult: (Result<List<kotlinx.serialization.json.JsonObject>>) -> Unit) { viewModelScope.launch { onResult(sourcesRepository.adminListChannels()) } }
-    fun adminUpsertCatalog(payload: kotlinx.serialization.json.JsonObject, existingId: String?, onDone: (Result<Unit>) -> Unit) { viewModelScope.launch { onDone(sourcesRepository.adminUpsertCatalogItem(payload, existingId)); refreshCloudContent() } }
-    fun adminDeleteCatalog(id: String, onDone: (Result<Unit>) -> Unit) { viewModelScope.launch { onDone(sourcesRepository.adminDeleteCatalogItem(id)); refreshCloudContent() } }
-    fun adminUpsertChannel(payload: kotlinx.serialization.json.JsonObject, existingId: String?, onDone: (Result<Unit>) -> Unit) { viewModelScope.launch { onDone(sourcesRepository.adminUpsertChannel(payload, existingId)); refreshCloudContent() } }
-    fun adminDeleteChannel(id: String, onDone: (Result<Unit>) -> Unit) { viewModelScope.launch { onDone(sourcesRepository.adminDeleteChannel(id)); refreshCloudContent() } }
+    private suspend fun requireAdmin(): Boolean {
+        if (verifyAdminAccess()) return true
+        val error = adminDeniedError()
+        _statusBanner.value = error.message
+        return false
+    }
+
+    fun adminSearchUsers(query: String, onResult: (Result<List<UserProfile>>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onResult(Result.failure(adminDeniedError())); return@launch }
+            onResult(authRepository.adminSearchUsers(query))
+        }
+    }
+
+    fun adminSetRole(userId: String, role: UserRole, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            onDone(authRepository.adminSetRole(userId, role))
+        }
+    }
+
+    fun adminSetBanned(userId: String, banned: Boolean, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            onDone(authRepository.adminSetBanned(userId, banned))
+        }
+    }
+
+    fun adminListCatalog(onResult: (Result<List<kotlinx.serialization.json.JsonObject>>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onResult(Result.failure(adminDeniedError())); return@launch }
+            onResult(sourcesRepository.adminListCatalog())
+        }
+    }
+
+    fun adminListEpisodes(onResult: (Result<List<kotlinx.serialization.json.JsonObject>>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onResult(Result.failure(adminDeniedError())); return@launch }
+            onResult(sourcesRepository.adminListEpisodes())
+        }
+    }
+
+    fun adminListChannels(onResult: (Result<List<kotlinx.serialization.json.JsonObject>>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onResult(Result.failure(adminDeniedError())); return@launch }
+            onResult(sourcesRepository.adminListChannels())
+        }
+    }
+
+    fun adminUpsertCatalog(payload: kotlinx.serialization.json.JsonObject, existingId: String?, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            val result = sourcesRepository.adminUpsertCatalogItem(payload, existingId)
+            onDone(result)
+            if (result.isSuccess) refreshCloudContent()
+        }
+    }
+
+    fun adminDeleteCatalog(id: String, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            val result = sourcesRepository.adminDeleteCatalogItem(id)
+            onDone(result)
+            if (result.isSuccess) refreshCloudContent()
+        }
+    }
+
+    fun adminUpsertEpisode(payload: kotlinx.serialization.json.JsonObject, existingId: String?, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            val result = sourcesRepository.adminUpsertEpisode(payload, existingId)
+            onDone(result)
+            if (result.isSuccess) refreshCloudContent()
+        }
+    }
+
+    fun adminDeleteEpisode(id: String, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            val result = sourcesRepository.adminDeleteEpisode(id)
+            onDone(result)
+            if (result.isSuccess) refreshCloudContent()
+        }
+    }
+
+    fun adminUpsertChannel(payload: kotlinx.serialization.json.JsonObject, existingId: String?, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            val result = sourcesRepository.adminUpsertChannel(payload, existingId)
+            onDone(result)
+            if (result.isSuccess) refreshCloudContent()
+        }
+    }
+
+    fun adminDeleteChannel(id: String, onDone: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            if (!requireAdmin()) { onDone(Result.failure(adminDeniedError())); return@launch }
+            val result = sourcesRepository.adminDeleteChannel(id)
+            onDone(result)
+            if (result.isSuccess) refreshCloudContent()
+        }
+    }
 
     // Legacy stubs to avoid compile errors in old UI refs; not exposed to users
     fun saveTmdbApiKey(apiKey: String) {}

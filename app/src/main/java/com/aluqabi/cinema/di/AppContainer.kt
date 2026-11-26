@@ -8,6 +8,7 @@ import com.aluqabi.cinema.data.remote.TmdbApiService
 import com.aluqabi.cinema.data.repository.AuthRepository
 import com.aluqabi.cinema.data.repository.CatalogRepository
 import com.aluqabi.cinema.data.repository.SourcesRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -41,7 +42,12 @@ class AppContainer(context: Context) {
     val authRepository: AuthRepository = AuthRepository(
         supabase = supabaseClient,
         settingsDataStore = settingsDataStore
-    )
+    ).also { auth ->
+        supabaseClient.tokenProvider = {
+            settingsDataStore.preferences.first().accessToken.takeIf { it.isNotBlank() }
+        }
+        supabaseClient.tokenRefresher = { auth.refreshAccessToken() }
+    }
 
     val sourcesRepository: SourcesRepository = SourcesRepository(
         context = appContext,

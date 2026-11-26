@@ -132,7 +132,7 @@ fun ProfileScreen(
                         IconButton(onClick = { showEditDialog = true }) { Icon(Icons.Rounded.Edit, strings.editProfile, tint = TextPrimary) }
                     }
                     Spacer(Modifier.height(14.dp))
-                    if (user.isAdmin) {
+                    if (user.isAdmin && !user.isBanned) {
                         Button(onClick = onOpenAdmin, colors = ButtonDefaults.buttonColors(containerColor = CinemaRed.copy(alpha = 0.18f)), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
                             Icon(Icons.Rounded.AdminPanelSettings, null, tint = CinemaRed, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))

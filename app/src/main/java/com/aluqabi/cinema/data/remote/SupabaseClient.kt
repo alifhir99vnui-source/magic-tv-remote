@@ -2,6 +2,8 @@ package com.aluqabi.cinema.data.remote
 
 import com.aluqabi.cinema.config.AppConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -20,15 +22,15 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.net.URLEncoder
 
 class SupabaseClient(private val http: OkHttpClient) {
     private val jsonType = "application/json".toMediaType()
     val json: Json = Json { ignoreUnknownKeys = true; isLenient = true; explicitNulls = false }
+    var tokenProvider: (suspend () -> String?)? = null
+    var tokenRefresher: (suspend () -> Boolean)? = null
+    private val refreshMutex = Mutex()
 
     fun isConfigured(): Boolean = AppConfig.isSupabaseConfigured
-
-    private fun String.enc(): String = URLEncoder.encode(this, "UTF-8")
 
     private fun authHeaders(token: String?): Request.Builder.() -> Unit = {
         header("apikey", AppConfig.SUPABASE_ANON_KEY)
@@ -37,7 +39,7 @@ class SupabaseClient(private val http: OkHttpClient) {
     }
 
     suspend fun authPost(path: String, body: JsonObject, token: String? = null): Result<JsonObject> =
-        request("POST", "${AppConfig.SUPABASE_URL}$path", body.toString(), token)
+        request("POST", "${AppConfig.SUPABASE_URL}$path", body.toString(), token, allowRefresh = !path.contains("grant_type=refresh_token"))
 
     suspend fun authGet(path: String, token: String): Result<JsonObject> =
         request("GET", "${AppConfig.SUPABASE_URL}$path", null, token)
@@ -55,44 +57,65 @@ class SupabaseClient(private val http: OkHttpClient) {
         requestElement("DELETE", "${AppConfig.SUPABASE_URL}/rest/v1/$path", null, token, "return=minimal")
 
     suspend fun rpc(name: String, body: JsonObject = JsonObject(emptyMap()), token: String? = null): Result<JsonElement> =
-        requestElement("POST", "${AppConfig.SUPABASE_URL}/rest/v1/rpc/$name", body.toString(), token)
+        requestElement("POST", "${AppConfig.SUPABASE_URL}/rest/v1/rpc/$name", body.toString(), token, null)
 
-    private suspend fun request(method: String, url: String, body: String?, token: String?): Result<JsonObject> =
+    private suspend fun resolveToken(token: String?): String? = token ?: tokenProvider?.invoke()
+
+    private suspend fun refreshTokenOnce(): Boolean {
+        val refresher = tokenRefresher ?: return false
+        return refreshMutex.withLock { runCatching { refresher() }.getOrDefault(false) }
+    }
+
+    private fun executeRequest(method: String, url: String, body: String?, token: String?, prefer: String?): Pair<Int, String> {
+        val reqBody = body?.toRequestBody(jsonType)
+        val builder = Request.Builder().url(url).apply(authHeaders(token))
+        if (!prefer.isNullOrBlank()) builder.header("Prefer", prefer)
+        when (method) {
+            "POST" -> builder.post(reqBody ?: "{}".toRequestBody(jsonType))
+            "PATCH" -> builder.patch(reqBody ?: "{}".toRequestBody(jsonType))
+            "DELETE" -> if (reqBody != null) builder.delete(reqBody) else builder.delete()
+            else -> builder.get()
+        }
+        http.newCall(builder.build()).execute().use { res ->
+            return res.code to res.body?.string().orEmpty()
+        }
+    }
+
+    private suspend fun request(method: String, url: String, body: String?, token: String?, allowRefresh: Boolean = true): Result<JsonObject> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val reqBody = body?.toRequestBody(jsonType)
-                val builder = Request.Builder().url(url).apply(authHeaders(token))
-                when (method) {
-                    "POST" -> builder.post(reqBody ?: "{}".toRequestBody(jsonType))
-                    "PATCH" -> builder.patch(reqBody ?: "{}".toRequestBody(jsonType))
-                    "DELETE" -> if (reqBody != null) builder.delete(reqBody) else builder.delete()
-                    else -> builder.get()
+                val resolvedToken = resolveToken(token)
+                var (code, text) = executeRequest(method, url, body, resolvedToken, null)
+                if (code == 401 && allowRefresh && tokenRefresher != null) {
+                    val refreshed = refreshTokenOnce()
+                    if (refreshed) {
+                        val newToken = tokenProvider?.invoke() ?: resolveToken(token)
+                        val retry = executeRequest(method, url, body, newToken, null)
+                        code = retry.first
+                        text = retry.second
+                    }
                 }
-                http.newCall(builder.build()).execute().use { res ->
-                    val text = res.body?.string().orEmpty()
-                    if (!res.isSuccessful) error(parseError(text, res.code))
-                    if (text.isBlank()) JsonObject(emptyMap()) else json.parseToJsonElement(text).jsonObject
-                }
+                if (code !in 200..299) error(parseError(text, code))
+                if (text.isBlank()) JsonObject(emptyMap()) else json.parseToJsonElement(text).jsonObject
             }
         }
 
-    private suspend fun requestElement(method: String, url: String, body: String?, token: String?, prefer: String?): Result<JsonElement> =
+    private suspend fun requestElement(method: String, url: String, body: String?, token: String?, prefer: String?, allowRefresh: Boolean = true): Result<JsonElement> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val reqBody = body?.toRequestBody(jsonType)
-                val builder = Request.Builder().url(url).apply(authHeaders(token))
-                if (!prefer.isNullOrBlank()) builder.header("Prefer", prefer)
-                when (method) {
-                    "POST" -> builder.post(reqBody ?: "{}".toRequestBody(jsonType))
-                    "PATCH" -> builder.patch(reqBody ?: "{}".toRequestBody(jsonType))
-                    "DELETE" -> if (reqBody != null) builder.delete(reqBody) else builder.delete()
-                    else -> builder.get()
+                val resolvedToken = resolveToken(token)
+                var (code, text) = executeRequest(method, url, body, resolvedToken, prefer)
+                if (code == 401 && allowRefresh && tokenRefresher != null) {
+                    val refreshed = refreshTokenOnce()
+                    if (refreshed) {
+                        val newToken = tokenProvider?.invoke() ?: resolveToken(token)
+                        val retry = executeRequest(method, url, body, newToken, prefer)
+                        code = retry.first
+                        text = retry.second
+                    }
                 }
-                http.newCall(builder.build()).execute().use { res ->
-                    val text = res.body?.string().orEmpty()
-                    if (!res.isSuccessful) error(parseError(text, res.code))
-                    if (text.isBlank()) JsonNull else json.parseToJsonElement(text)
-                }
+                if (code !in 200..299) error(parseError(text, code))
+                if (text.isBlank()) JsonNull else json.parseToJsonElement(text)
             }
         }
 

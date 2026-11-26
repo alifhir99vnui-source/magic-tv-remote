@@ -122,6 +122,7 @@ data class AppStrings(
     val roleUser: String,
     val manageMembers: String,
     val manageCatalog: String,
+    val manageEpisodes: String,
     val manageChannels: String,
     val promoteModerator: String,
     val demoteUser: String,
@@ -131,11 +132,16 @@ data class AppStrings(
     val add: String,
     val update: String,
     val tmdbIdLabel: String,
+    val seasonNumberLabel: String,
+    val episodeNumberLabel: String,
     val titleLabel: String,
     val streamUrlLabel: String,
     val subtitleUrlLabel: String,
     val qualitiesJsonLabel: String,
-    val subtitlesJsonLabel: String
+    val subtitlesJsonLabel: String,
+    val bannedBadge: String,
+    val groupLabel: String,
+    val logoUrlLabel: String
 )
 
 fun stringsFor(languageCode: String): AppStrings {
@@ -260,6 +266,7 @@ fun stringsFor(languageCode: String): AppStrings {
             roleUser = "مستخدم",
             manageMembers = "إدارة الأعضاء",
             manageCatalog = "إدارة المحتوى",
+            manageEpisodes = "إدارة الحلقات",
             manageChannels = "إدارة القنوات",
             promoteModerator = "ترقية لإدارة",
             demoteUser = "إرجاع لمستخدم",
@@ -269,11 +276,16 @@ fun stringsFor(languageCode: String): AppStrings {
             add = "إضافة",
             update = "تعديل",
             tmdbIdLabel = "TMDB ID",
+            seasonNumberLabel = "رقم الموسم",
+            episodeNumberLabel = "رقم الحلقة",
             titleLabel = "العنوان",
             streamUrlLabel = "رابط التشغيل",
             subtitleUrlLabel = "رابط الترجمة",
             qualitiesJsonLabel = "الجودات (JSON)",
-            subtitlesJsonLabel = "الترجمات (JSON)"
+            subtitlesJsonLabel = "الترجمات (JSON)",
+            bannedBadge = " • محظور",
+            groupLabel = "المجموعة",
+            logoUrlLabel = "رابط الشعار"
         )
     } else {
         AppStrings(
@@ -395,6 +407,7 @@ fun stringsFor(languageCode: String): AppStrings {
             roleUser = "User",
             manageMembers = "Manage Members",
             manageCatalog = "Manage Content",
+            manageEpisodes = "Manage Episodes",
             manageChannels = "Manage Channels",
             promoteModerator = "Promote to Moderator",
             demoteUser = "Demote to User",
@@ -404,11 +417,16 @@ fun stringsFor(languageCode: String): AppStrings {
             add = "Add",
             update = "Update",
             tmdbIdLabel = "TMDB ID",
+            seasonNumberLabel = "Season Number",
+            episodeNumberLabel = "Episode Number",
             titleLabel = "Title",
             streamUrlLabel = "Stream URL",
             subtitleUrlLabel = "Subtitle URL",
             qualitiesJsonLabel = "Qualities (JSON)",
-            subtitlesJsonLabel = "Subtitles (JSON)"
+            subtitlesJsonLabel = "Subtitles (JSON)",
+            bannedBadge = " • BANNED",
+            groupLabel = "Group",
+            logoUrlLabel = "Logo URL"
         )
     }
 }

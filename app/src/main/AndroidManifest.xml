@@ -15,7 +15,7 @@
 
         <activity
             android:name=".MainActivity"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|locale|fontScale|uiMode"
             android:exported="true"
             android:launchMode="singleTask"
             android:supportsPictureInPicture="true"

@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.aluqabi.cinema.data.remote.model.TmdbGenreDto
 import com.aluqabi.cinema.domain.model.MediaCardItem
 import com.aluqabi.cinema.domain.model.MediaType
@@ -185,6 +187,11 @@ fun SearchScreen(
     onBack: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+
+    LaunchedEffect(query) {
+        delay(250)
+        onQueryChange(query)
+    }
 
     Scaffold(
         containerColor = CinemaBackground,

@@ -50,7 +50,7 @@ import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.PlaylistPlay
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.SkipNext
@@ -76,6 +76,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -127,6 +128,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.Locale
@@ -196,12 +198,12 @@ fun NetflixPlayerScreen(
     // Seek animation overlays
     var seekBurstText by remember { mutableStateOf<String?>(null) }
     var seekBurstLeft by remember { mutableStateOf(false) }
+    var seekBurstToken by remember { mutableIntStateOf(0) }
 
     // Edge HUD states
     var activeEdgeHud by remember { mutableStateOf<EdgeHudType?>(null) }
-    var brightnessFraction by remember {
-        mutableFloatStateOf(readInitialBrightness(activity, context))
-    }
+    val initialBrightnessFraction = remember(activity, context) { readInitialBrightness(activity, context) }
+    var brightnessFraction by remember { mutableFloatStateOf(initialBrightnessFraction) }
     val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
     var volumeFraction by remember {
         mutableFloatStateOf(
@@ -234,6 +236,14 @@ fun NetflixPlayerScreen(
     }
     var subtitleSyncOffsetMs by remember { mutableLongStateOf(0L) }
 
+    val currentRequest by rememberUpdatedState(activeRequest)
+    val currentStreamOption by rememberUpdatedState(activeStreamOption)
+    val currentIsScrubbing by rememberUpdatedState(isScrubbing)
+    val currentBrightnessFraction by rememberUpdatedState(brightnessFraction)
+    val currentVolumeFraction by rememberUpdatedState(volumeFraction)
+    val currentPinchScale by rememberUpdatedState(pinchScale)
+    val currentControlsVisible by rememberUpdatedState(controlsVisible)
+
     val trackSelector = remember { DefaultTrackSelector(context) }
     val exoPlayer = remember {
         ExoPlayer.Builder(context)
@@ -242,6 +252,12 @@ fun NetflixPlayerScreen(
     }
 
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+
+    fun showSeekBurst(text: String, left: Boolean) {
+        seekBurstText = text
+        seekBurstLeft = left
+        seekBurstToken++
+    }
 
     // Helper to load external SRT/VTT content
     fun loadExternalSubtitle(option: SubtitleTrackOption) {
@@ -316,7 +332,7 @@ fun NetflixPlayerScreen(
     }
 
     // Immersive fullscreen & orientation handling
-    DisposableEffect(activity) {
+    DisposableEffect(activity, activeRequest.mediaKey) {
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         val window = activity?.window
         if (window != null) {
@@ -327,18 +343,24 @@ fun NetflixPlayerScreen(
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         onDispose {
-            onSaveProgress(
-                activeRequest,
-                activeStreamOption.url,
-                exoPlayer.currentPosition,
-                exoPlayer.duration.coerceAtLeast(0L)
-            )
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             if (window != null) {
                 WindowCompat.setDecorFitsSystemWindows(window, true)
                 WindowInsetsControllerCompat(window, window.decorView)
                     .show(WindowInsetsCompat.Type.systemBars())
             }
+        }
+    }
+
+    DisposableEffect(activity) {
+        onDispose {
+            onSaveProgress(
+                currentRequest,
+                currentStreamOption.url,
+                exoPlayer.currentPosition,
+                exoPlayer.duration.coerceAtLeast(0L)
+            )
+            applyWindowBrightness(activity, initialBrightnessFraction)
             exoPlayer.release()
         }
     }
@@ -435,7 +457,7 @@ fun NetflixPlayerScreen(
     LaunchedEffect(exoPlayer, activeRequest.mediaKey) {
         var tick = 0
         while (true) {
-            if (!isScrubbing) {
+            if (!currentIsScrubbing) {
                 currentPositionMs = exoPlayer.currentPosition.coerceAtLeast(0L)
             }
             durationMs = exoPlayer.duration.coerceAtLeast(0L)
@@ -443,8 +465,8 @@ fun NetflixPlayerScreen(
             tick++
             if (tick % 10 == 0 && currentPositionMs > 0L) {
                 onSaveProgress(
-                    activeRequest,
-                    activeStreamOption.url,
+                    currentRequest,
+                    currentStreamOption.url,
                     currentPositionMs,
                     durationMs
                 )
@@ -468,7 +490,7 @@ fun NetflixPlayerScreen(
             lockedHintVisible = false
         }
     }
-    LaunchedEffect(seekBurstText) {
+    LaunchedEffect(seekBurstToken) {
         if (seekBurstText != null) {
             delay(650L)
             seekBurstText = null
@@ -506,13 +528,11 @@ fun NetflixPlayerScreen(
 
     val touchSlop = LocalViewConfiguration.current.touchSlop
 
-    // Force LTR coordinates for gesture surface so physical Left = Brightness and Right = Volume
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-        ) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
             val baseResizeMode = when (aspectMode) {
                 PlayerAspectMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                 PlayerAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
@@ -597,7 +617,7 @@ fun NetflixPlayerScreen(
                                         axis = GestureAxis.PINCH
                                         val zoomChange = event.calculateZoom()
                                         if (zoomChange != 1f) {
-                                            pinchScale = (pinchScale * zoomChange).coerceIn(1f, 3f)
+                                            pinchScale = (currentPinchScale * zoomChange).coerceIn(1f, 3f)
                                             event.changes.forEach { it.consume() }
                                         }
                                     } else if (pressed.size == 1 && axis != GestureAxis.PINCH && !isLocked) {
@@ -621,15 +641,17 @@ fun NetflixPlayerScreen(
                                         when (axis) {
                                             GestureAxis.EDGE_LEFT_BRIGHTNESS -> {
                                                 val delta = -dy / (size.height * 0.7f)
-                                                brightnessFraction = (brightnessFraction + delta).coerceIn(0.02f, 1f)
-                                                applyWindowBrightness(activity, brightnessFraction)
+                                                val nextBrightness = (currentBrightnessFraction + delta).coerceIn(0.02f, 1f)
+                                                brightnessFraction = nextBrightness
+                                                applyWindowBrightness(activity, nextBrightness)
                                                 activeEdgeHud = EdgeHudType.BRIGHTNESS
                                                 change.consume()
                                             }
                                             GestureAxis.EDGE_RIGHT_VOLUME -> {
                                                 val delta = -dy / (size.height * 0.7f)
-                                                volumeFraction = (volumeFraction + delta).coerceIn(0f, 1f)
-                                                val targetVol = (volumeFraction * maxVolume).roundToInt()
+                                                val nextVolume = (currentVolumeFraction + delta).coerceIn(0f, 1f)
+                                                volumeFraction = nextVolume
+                                                val targetVol = (nextVolume * maxVolume).roundToInt()
                                                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
                                                 activeEdgeHud = EdgeHudType.VOLUME
                                                 change.consume()
@@ -649,14 +671,14 @@ fun NetflixPlayerScreen(
                                             awaitFirstDown(requireUnconsumed = false)
                                         }
                                         if (secondTap != null) {
+                                            val tapX = secondTap.position.x
                                             when {
-                                                downPos.x < size.width * 0.42f -> {
+                                                tapX < size.width * 0.42f -> {
                                                     val target = (exoPlayer.currentPosition - 10_000L).coerceAtLeast(0L)
                                                     exoPlayer.seekTo(target)
-                                                    seekBurstLeft = true
-                                                    seekBurstText = "-10s"
+                                                    showSeekBurst("-10s", left = true)
                                                 }
-                                                downPos.x > size.width * 0.58f -> {
+                                                tapX > size.width * 0.58f -> {
                                                     val dur = exoPlayer.duration
                                                     val target = if (dur > 0L) {
                                                         (exoPlayer.currentPosition + 10_000L).coerceAtMost(dur)
@@ -664,15 +686,14 @@ fun NetflixPlayerScreen(
                                                         exoPlayer.currentPosition + 10_000L
                                                     }
                                                     exoPlayer.seekTo(target)
-                                                    seekBurstLeft = false
-                                                    seekBurstText = "+10s"
+                                                    showSeekBurst("+10s", left = false)
                                                 }
                                                 else -> {
                                                     if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
                                                 }
                                             }
                                         } else {
-                                            controlsVisible = !controlsVisible
+                                            controlsVisible = !currentControlsVisible
                                         }
                                     }
                                 }
@@ -690,60 +711,64 @@ fun NetflixPlayerScreen(
             }
 
             // Double-tap seek visual animation
-            AnimatedVisibility(
-                visible = seekBurstText != null,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(if (seekBurstLeft) Alignment.CenterStart else Alignment.CenterEnd)
-                    .padding(horizontal = 48.dp)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                AnimatedVisibility(
+                    visible = seekBurstText != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
                     modifier = Modifier
-                        .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(20.dp))
-                        .padding(horizontal = 20.dp, vertical = 14.dp)
+                        .align(if (seekBurstLeft) Alignment.CenterStart else Alignment.CenterEnd)
+                        .padding(horizontal = 48.dp)
                 ) {
-                    Icon(
-                        imageVector = if (seekBurstLeft) Icons.Rounded.Replay10 else Icons.Rounded.Forward10,
-                        contentDescription = null,
-                        tint = TextPrimary,
-                        modifier = Modifier.size(34.dp)
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = seekBurstText.orEmpty(),
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 20.dp, vertical = 14.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (seekBurstLeft) Icons.Rounded.Replay10 else Icons.Rounded.Forward10,
+                            contentDescription = null,
+                            tint = TextPrimary,
+                            modifier = Modifier.size(34.dp)
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = seekBurstText.orEmpty(),
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
             }
 
             // Vertical Edge Swipe HUD Slider (Brightness / Volume)
-            AnimatedVisibility(
-                visible = activeEdgeHud != null,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(
-                        if (activeEdgeHud == EdgeHudType.BRIGHTNESS) Alignment.CenterStart
-                        else Alignment.CenterEnd
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                AnimatedVisibility(
+                    visible = activeEdgeHud != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(
+                            if (activeEdgeHud == EdgeHudType.BRIGHTNESS) Alignment.CenterStart
+                            else Alignment.CenterEnd
+                        )
+                        .padding(horizontal = 28.dp)
+                ) {
+                    val isBrightness = activeEdgeHud == EdgeHudType.BRIGHTNESS
+                    val fraction = if (isBrightness) brightnessFraction else volumeFraction
+                    val icon = when {
+                        isBrightness -> Icons.Rounded.BrightnessHigh
+                        fraction <= 0.01f -> Icons.AutoMirrored.Rounded.VolumeOff
+                        else -> Icons.AutoMirrored.Rounded.VolumeUp
+                    }
+                    EdgeHudSlider(
+                        icon = icon,
+                        label = if (isBrightness) strings.brightnessLabel else strings.volumeLabel,
+                        fraction = fraction
                     )
-                    .padding(horizontal = 28.dp)
-            ) {
-                val isBrightness = activeEdgeHud == EdgeHudType.BRIGHTNESS
-                val fraction = if (isBrightness) brightnessFraction else volumeFraction
-                val icon = when {
-                    isBrightness -> Icons.Rounded.BrightnessHigh
-                    fraction <= 0.01f -> Icons.AutoMirrored.Rounded.VolumeOff
-                    else -> Icons.AutoMirrored.Rounded.VolumeUp
                 }
-                EdgeHudSlider(
-                    icon = icon,
-                    label = if (isBrightness) strings.brightnessLabel else strings.volumeLabel,
-                    fraction = fraction
-                )
             }
 
             // Error overlay
@@ -997,56 +1022,58 @@ fun NetflixPlayerScreen(
                             .padding(horizontal = 16.dp, vertical = 12.dp)
                     ) {
                         if (activeRequest.mediaType != MediaType.LIVE_TV && durationMs > 0L) {
-                            val displayedPos = if (isScrubbing) scrubPositionMs else currentPositionMs
-                            val remainingMs = (durationMs - displayedPos).coerceAtLeast(0L)
-                            val bufferFraction = (bufferedPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                val displayedPos = if (isScrubbing) scrubPositionMs else currentPositionMs
+                                val remainingMs = (durationMs - displayedPos).coerceAtLeast(0L)
+                                val bufferFraction = (bufferedPositionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
 
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                // Subtle buffered progress bar behind the thumb slider
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(bufferFraction)
-                                        .height(3.dp)
-                                        .align(Alignment.CenterStart)
-                                        .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(2.dp))
-                                )
-                                Slider(
-                                    value = displayedPos.toFloat(),
-                                    onValueChange = {
-                                        isScrubbing = true
-                                        scrubPositionMs = it.toLong()
-                                    },
-                                    onValueChangeFinished = {
-                                        exoPlayer.seekTo(scrubPositionMs)
-                                        currentPositionMs = scrubPositionMs
-                                        isScrubbing = false
-                                    },
-                                    valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = CinemaRed,
-                                        activeTrackColor = CinemaRed,
-                                        inactiveTrackColor = Color.White.copy(alpha = 0.2f)
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    // Subtle buffered progress bar behind the thumb slider
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(bufferFraction)
+                                            .height(3.dp)
+                                            .align(Alignment.CenterStart)
+                                            .background(Color.White.copy(alpha = 0.35f), RoundedCornerShape(2.dp))
+                                    )
+                                    Slider(
+                                        value = displayedPos.toFloat(),
+                                        onValueChange = {
+                                            isScrubbing = true
+                                            scrubPositionMs = it.toLong()
+                                        },
+                                        onValueChangeFinished = {
+                                            exoPlayer.seekTo(scrubPositionMs)
+                                            currentPositionMs = scrubPositionMs
+                                            isScrubbing = false
+                                        },
+                                        valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = CinemaRed,
+                                            activeTrackColor = CinemaRed,
+                                            inactiveTrackColor = Color.White.copy(alpha = 0.2f)
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = formatDurationMs(displayedPos),
-                                    color = TextPrimary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = "-${formatDurationMs(remainingMs)}",
-                                    color = TextSecondary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = formatDurationMs(displayedPos),
+                                        color = TextPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "-${formatDurationMs(remainingMs)}",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
                             }
                         }
 
@@ -1098,13 +1125,15 @@ fun NetflixPlayerScreen(
 
                             if (activeRequest.episodesQueue.isNotEmpty()) {
                                 PlayerBottomAction(
-                                    icon = Icons.Rounded.PlaylistPlay,
+                                    icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
                                     label = strings.episodesTitle,
                                     onClick = { activeSheet = PlayerSheet.EPISODES }
                                 )
+                                val parsedKey = parseEpisodeKey(activeRequest.mediaKey)
                                 val nextEp = findNextEpisode(
                                     activeRequest.episodesQueue,
-                                    activeRequest.episodeNumber
+                                    activeRequest.seasonNumber ?: parsedKey?.first,
+                                    activeRequest.episodeNumber ?: parsedKey?.second
                                 )
                                 if (nextEp != null) {
                                     PlayerBottomAction(
@@ -1123,6 +1152,7 @@ fun NetflixPlayerScreen(
                                                     )
                                                     activeRequest = updatedReq
                                                     activeStreamOption = streamOpt
+                                                    isAutoQuality = true
                                                 }
                                             )
                                         }
@@ -1156,9 +1186,15 @@ fun NetflixPlayerScreen(
                     QualityAndAudioSheet(
                         strings = strings,
                         qualities = mergedQualities,
-                        isAutoQuality = if (activeRequest.streamOptions.size > 1) false else isAutoQuality,
+                        isAutoQuality = isAutoQuality,
                         audioTracks = audioTracks,
                         onSelectAutoQuality = {
+                            val firstStream = activeRequest.streamOptions.firstOrNull()
+                            if (firstStream != null && firstStream.url.isNotBlank() && firstStream.url != activeStreamOption.url) {
+                                val resumePos = exoPlayer.currentPosition
+                                activeRequest = activeRequest.copy(initialPositionMs = resumePos)
+                                activeStreamOption = firstStream
+                            }
                             isAutoQuality = true
                             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
                                 .buildUpon()
@@ -1171,6 +1207,7 @@ fun NetflixPlayerScreen(
                                 val resumePos = exoPlayer.currentPosition
                                 activeRequest = activeRequest.copy(initialPositionMs = resumePos)
                                 activeStreamOption = StreamQualityOption(track.label, track.externalUrl)
+                                isAutoQuality = track.externalUrl == activeRequest.streamOptions.firstOrNull()?.url
                             } else if (track.trackGroup != null && track.trackIndex >= 0) {
                                 isAutoQuality = false
                                 exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
@@ -1285,6 +1322,7 @@ fun NetflixPlayerScreen(
                                     )
                                     activeRequest = updatedReq
                                     activeStreamOption = streamOpt
+                                    isAutoQuality = true
                                 }
                             )
                         },
@@ -1295,7 +1333,6 @@ fun NetflixPlayerScreen(
                 PlayerSheet.NONE -> Unit
             }
         }
-    }
 }
 
 @Composable
@@ -1377,13 +1414,31 @@ private fun PlayerBottomAction(
     }
 }
 
+private val episodeKeyRegex = Regex("""_s(-?\d+)_e(-?\d+)$""")
+
+private fun parseEpisodeKey(key: String): Pair<Int, Int>? {
+    val match = episodeKeyRegex.find(key) ?: return null
+    val season = match.groupValues[1].toIntOrNull() ?: return null
+    val episode = match.groupValues[2].toIntOrNull() ?: return null
+    return season to episode
+}
+
+private fun seriesKeyWithoutEpisode(key: String): String =
+    episodeKeyRegex.find(key)?.let { key.removeRange(it.range) } ?: key
+
 private fun findNextEpisode(
     queue: List<PlayerEpisodeEntry>,
-    currentEpNumber: Int?
+    currentSeason: Int?,
+    currentEpisodeNumber: Int?
 ): PlayerEpisodeEntry? {
-    if (queue.isEmpty() || currentEpNumber == null) return null
-    val idx = queue.indexOfFirst { it.episodeNumber == currentEpNumber }
-    return if (idx in 0 until queue.lastIndex) queue[idx + 1] else null
+    if (queue.isEmpty() || currentSeason == null || currentEpisodeNumber == null) return null
+    val idx = queue.indexOfFirst {
+        it.seasonNumber == currentSeason && it.episodeNumber == currentEpisodeNumber
+    }
+    if (idx >= 0) return queue.getOrNull(idx + 1)
+    return queue.firstOrNull {
+        it.seasonNumber == currentSeason && it.episodeNumber > currentEpisodeNumber
+    } ?: queue.firstOrNull { it.seasonNumber > currentSeason }
 }
 
 private fun switchToEpisode(
@@ -1395,7 +1450,7 @@ private fun switchToEpisode(
         listOf(StreamQualityOption("Auto", nextEp.streamUrl))
     }
     val nextStream = streams.firstOrNull() ?: return
-    val baseSeriesKey = current.mediaKey.substringBefore("_s")
+    val baseSeriesKey = seriesKeyWithoutEpisode(current.mediaKey)
     val nextReq = current.copy(
         mediaKey = "${baseSeriesKey}_s${nextEp.seasonNumber}_e${nextEp.episodeNumber}",
         subtitle = "S${nextEp.seasonNumber} E${nextEp.episodeNumber} - ${nextEp.title}",

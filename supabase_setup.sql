@@ -27,7 +27,7 @@ returns text
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
     select coalesce((select role from public.profiles where id = auth.uid()), 'user');
 $$;
@@ -37,7 +37,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
     select public.current_user_role() = 'admin';
 $$;
@@ -47,7 +47,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
     select public.current_user_role() in ('admin', 'moderator');
 $$;
@@ -57,7 +57,7 @@ returns boolean
 language sql
 stable
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
     select coalesce((select not is_banned from public.profiles where id = auth.uid()), true);
 $$;
@@ -67,7 +67,7 @@ create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 declare
     derived_name text;
@@ -100,7 +100,7 @@ create or replace function public.prevent_role_self_escalation()
 returns trigger
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, pg_temp
 as $$
 begin
     if (new.role is distinct from old.role or new.is_banned is distinct from old.is_banned)
@@ -352,3 +352,62 @@ create policy "Owners or staff can delete comments"
     on public.comments for delete
     to authenticated
     using (auth.uid() = user_id or public.is_staff());
+
+grant usage on schema public to anon, authenticated;
+
+grant select on public.profiles to authenticated;
+grant insert, update, delete on public.profiles to authenticated;
+grant select on public.movies_catalog to anon, authenticated;
+grant insert, update, delete on public.movies_catalog to authenticated;
+grant select on public.series_episodes to anon, authenticated;
+grant insert, update, delete on public.series_episodes to authenticated;
+grant select on public.live_channels to anon, authenticated;
+grant insert, update, delete on public.live_channels to authenticated;
+grant select on public.reactions to anon, authenticated;
+grant insert, update, delete on public.reactions to authenticated;
+grant select on public.favorites to authenticated;
+grant insert, update, delete on public.favorites to authenticated;
+grant select on public.comments to anon, authenticated;
+grant insert, delete on public.comments to authenticated;
+
+drop policy if exists "Users insert own favorites" on public.favorites;
+create policy "Users insert own favorites"
+    on public.favorites for insert
+    to authenticated
+    with check (auth.uid() = user_id and public.is_not_banned());
+
+drop policy if exists "Users update own favorites" on public.favorites;
+create policy "Users update own favorites"
+    on public.favorites for update
+    to authenticated
+    using (auth.uid() = user_id and public.is_not_banned())
+    with check (auth.uid() = user_id and public.is_not_banned());
+
+drop policy if exists "Authenticated users manage own reactions" on public.reactions;
+create policy "Authenticated users manage own reactions"
+    on public.reactions for insert
+    to authenticated
+    with check (auth.uid() = user_id and public.is_not_banned());
+
+create or replace function public.search_profiles(search_text text default '')
+returns setof public.profiles
+language sql
+stable
+security definer
+set search_path = public, pg_temp, pg_temp
+as $$
+    select p.*
+    from public.profiles p
+    where public.is_admin()
+      and (
+        coalesce(btrim(search_text), '') = ''
+        or p.email ilike '%' || search_text || '%'
+        or p.name ilike '%' || search_text || '%'
+        or p.phone ilike '%' || search_text || '%'
+      )
+    order by p.created_at desc
+    limit 50;
+$$;
+
+revoke all on function public.search_profiles(text) from public;
+grant execute on function public.search_profiles(text) to authenticated;

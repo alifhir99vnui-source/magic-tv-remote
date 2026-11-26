@@ -1,7 +1,9 @@
 package com.aluqabi.cinema.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +45,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -70,18 +74,36 @@ import kotlinx.serialization.json.put
 fun AdminPanelScreen(
     strings: AppStrings,
     onBack: () -> Unit,
+    onVerifyAccess: ((Boolean) -> Unit) -> Unit,
     onSearchUsers: (String, (Result<List<UserProfile>>) -> Unit) -> Unit,
     onSetRole: (String, UserRole, (Result<Unit>) -> Unit) -> Unit,
     onSetBanned: (String, Boolean, (Result<Unit>) -> Unit) -> Unit,
     onListCatalog: ((Result<List<JsonObject>>) -> Unit) -> Unit,
     onUpsertCatalog: (JsonObject, String?, (Result<Unit>) -> Unit) -> Unit,
     onDeleteCatalog: (String, (Result<Unit>) -> Unit) -> Unit,
+    onListEpisodes: ((Result<List<JsonObject>>) -> Unit) -> Unit,
+    onUpsertEpisode: (JsonObject, String?, (Result<Unit>) -> Unit) -> Unit,
+    onDeleteEpisode: (String, (Result<Unit>) -> Unit) -> Unit,
     onListChannels: ((Result<List<JsonObject>>) -> Unit) -> Unit,
     onUpsertChannel: (JsonObject, String?, (Result<Unit>) -> Unit) -> Unit,
     onDeleteChannel: (String, (Result<Unit>) -> Unit) -> Unit
 ) {
     var tab by remember { mutableIntStateOf(0) }
-    val tabs = listOf(strings.manageMembers, strings.manageCatalog, strings.manageChannels)
+    var isVerified by remember { mutableStateOf(false) }
+    val tabs = listOf(strings.manageMembers, strings.manageCatalog, strings.manageEpisodes, strings.manageChannels)
+
+    LaunchedEffect(Unit) {
+        onVerifyAccess { allowed ->
+            if (allowed) isVerified = true else onBack()
+        }
+    }
+
+    if (!isVerified) {
+        Box(Modifier.fillMaxSize().background(CinemaBackground), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = CinemaRed)
+        }
+        return
+    }
 
     Scaffold(
         containerColor = CinemaBackground,
@@ -100,7 +122,8 @@ fun AdminPanelScreen(
             when (tab) {
                 0 -> MembersTab(strings, onSearchUsers, onSetRole, onSetBanned)
                 1 -> CatalogTab(strings, onListCatalog, onUpsertCatalog, onDeleteCatalog)
-                2 -> ChannelsTab(strings, onListChannels, onUpsertChannel, onDeleteChannel)
+                2 -> EpisodesTab(strings, onListEpisodes, onUpsertEpisode, onDeleteEpisode)
+                3 -> ChannelsTab(strings, onListChannels, onUpsertChannel, onDeleteChannel)
             }
         }
     }
@@ -124,7 +147,7 @@ private fun MembersTab(strings: AppStrings, onSearch: (String, (Result<List<User
                 Column(Modifier.padding(12.dp)) {
                     Text(u.name, color = TextPrimary, fontWeight = FontWeight.Bold)
                     Text(u.email.ifBlank { u.phone }, color = TextSecondary, fontSize = 12.sp)
-                    Text(u.role.name + if (u.isBanned) " • BANNED" else "", color = if (u.isBanned) CinemaRed else TextSecondary, fontSize = 12.sp)
+                    Text(u.role.name + if (u.isBanned) strings.bannedBadge else "", color = if (u.isBanned) CinemaRed else TextSecondary, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = { onSetRole(u.id, if (u.role == UserRole.MODERATOR) UserRole.USER else UserRole.MODERATOR) { it.onSuccess { refresh() }.onFailure { e -> msg = e.message } } }, border = BorderStroke(1.dp, CinemaSurfaceBorder)) {
@@ -199,6 +222,76 @@ private fun CatalogTab(strings: AppStrings, onList: ((Result<List<JsonObject>>) 
 }
 
 @Composable
+private fun EpisodesTab(strings: AppStrings, onList: ((Result<List<JsonObject>>) -> Unit) -> Unit, onUpsert: (JsonObject, String?, (Result<Unit>) -> Unit) -> Unit, onDelete: (String, (Result<Unit>) -> Unit) -> Unit) {
+    var items by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var editId by remember { mutableStateOf<String?>(null) }
+    var tmdbId by remember { mutableStateOf("") }
+    var season by remember { mutableStateOf("1") }
+    var episode by remember { mutableStateOf("1") }
+    var title by remember { mutableStateOf("") }
+    var streamUrl by remember { mutableStateOf("") }
+    var qualities by remember { mutableStateOf("[{\"label\":\"1080p\",\"url\":\"\"}]") }
+    var subtitles by remember { mutableStateOf("[]") }
+    fun refresh() = onList { r -> r.onSuccess { items = it }.onFailure { msg = it.message } }
+    LaunchedEffect(Unit) { refresh() }
+
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = CinemaSurface), border = BorderStroke(1.dp, CinemaSurfaceBorder), shape = RoundedCornerShape(12.dp)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (editId == null) strings.add else strings.update, color = TextPrimary, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(tmdbId, { tmdbId = it.filter(Char::isDigit) }, label = { Text(strings.tmdbIdLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(season, { season = it.filter(Char::isDigit) }, label = { Text(strings.seasonNumberLabel) }, singleLine = true, modifier = Modifier.weight(1f), colors = adminFieldColors())
+                        OutlinedTextField(episode, { episode = it.filter(Char::isDigit) }, label = { Text(strings.episodeNumberLabel) }, singleLine = true, modifier = Modifier.weight(1f), colors = adminFieldColors())
+                    }
+                    OutlinedTextField(title, { title = it }, label = { Text(strings.titleLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    OutlinedTextField(streamUrl, { streamUrl = it }, label = { Text(strings.streamUrlLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    OutlinedTextField(qualities, { qualities = it }, label = { Text(strings.qualitiesJsonLabel) }, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    OutlinedTextField(subtitles, { subtitles = it }, label = { Text(strings.subtitlesJsonLabel) }, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    Button(onClick = {
+                        val payload = buildJsonObject {
+                            tmdbId.toIntOrNull()?.let { put("series_tmdb_id", it) }
+                            season.toIntOrNull()?.let { put("season_number", it) }
+                            episode.toIntOrNull()?.let { put("episode_number", it) }
+                            put("title", title); put("stream_url", streamUrl)
+                            put("qualities", runCatching { kotlinx.serialization.json.Json.parseToJsonElement(qualities) }.getOrElse { JsonArray(emptyList()) })
+                            put("subtitles", runCatching { kotlinx.serialization.json.Json.parseToJsonElement(subtitles) }.getOrElse { JsonArray(emptyList()) })
+                        }
+                        onUpsert(payload, editId) { r -> r.onSuccess { msg = "OK"; editId = null; title = ""; streamUrl = ""; refresh() }.onFailure { msg = it.message } }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = CinemaRed)) { Text(strings.saveChanges, color = TextPrimary) }
+                    msg?.let { Text(it, color = TextSecondary, fontSize = 12.sp) }
+                }
+            }
+        }
+        items(items, key = { it.str("id") }) { item ->
+            Card(colors = CardDefaults.cardColors(containerColor = CinemaSurface), border = BorderStroke(1.dp, CinemaSurfaceBorder)) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(Modifier.weight(1f)) {
+                        Text(item.str("title"), color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Text("S${item.str("season_number")} E${item.str("episode_number")} • TMDB ${item.str("series_tmdb_id")}", color = TextSecondary, fontSize = 12.sp)
+                    }
+                    Row {
+                        OutlinedButton(onClick = {
+                            editId = item.str("id")
+                            tmdbId = item.str("series_tmdb_id")
+                            season = item.str("season_number").ifBlank { "1" }
+                            episode = item.str("episode_number").ifBlank { "1" }
+                            title = item.str("title")
+                            streamUrl = item.str("stream_url")
+                            qualities = item["qualities"]?.toString() ?: "[]"
+                            subtitles = item["subtitles"]?.toString() ?: "[]"
+                        }) { Text(strings.update, fontSize = 11.sp) }
+                        IconButton(onClick = { onDelete(item.str("id")) { r -> r.onSuccess { refresh() }.onFailure { msg = it.message } } }) { Icon(Icons.Rounded.Delete, null, tint = CinemaRed) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ChannelsTab(strings: AppStrings, onList: ((Result<List<JsonObject>>) -> Unit) -> Unit, onUpsert: (JsonObject, String?, (Result<Unit>) -> Unit) -> Unit, onDelete: (String, (Result<Unit>) -> Unit) -> Unit) {
     var items by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var msg by remember { mutableStateOf<String?>(null) }
@@ -216,8 +309,8 @@ private fun ChannelsTab(strings: AppStrings, onList: ((Result<List<JsonObject>>)
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(if (editId == null) strings.add else strings.update, color = TextPrimary, fontWeight = FontWeight.Bold)
                     OutlinedTextField(name, { name = it }, label = { Text(strings.titleLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
-                    OutlinedTextField(group, { group = it }, label = { Text("Group") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
-                    OutlinedTextField(logo, { logo = it }, label = { Text("Logo URL") }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    OutlinedTextField(group, { group = it }, label = { Text(strings.groupLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
+                    OutlinedTextField(logo, { logo = it }, label = { Text(strings.logoUrlLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
                     OutlinedTextField(url, { url = it }, label = { Text(strings.streamUrlLabel) }, singleLine = true, modifier = Modifier.fillMaxWidth(), colors = adminFieldColors())
                     Button(onClick = {
                         val payload = buildJsonObject { put("name", name); put("group_title", group.ifBlank { "General" }); put("logo_url", logo); put("stream_url", url); put("is_active", true) }

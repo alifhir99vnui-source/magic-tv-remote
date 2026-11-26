@@ -2,12 +2,15 @@ package com.aluqabi.cinema
 
 import android.app.PictureInPictureParams
 import android.content.res.Configuration
+import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -17,19 +20,25 @@ import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Tv
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
@@ -73,6 +82,7 @@ class MainActivity : ComponentActivity() {
 
     private var isPlayerActive by mutableStateOf(false)
     private var isInPipMode by mutableStateOf(false)
+    private var pipEntryRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,25 +97,37 @@ class MainActivity : ComponentActivity() {
 
             val preferences by cinemaViewModel.preferences.collectAsStateWithLifecycle()
             val currentProfile by cinemaViewModel.currentProfile.collectAsStateWithLifecycle()
+            val authLoading by cinemaViewModel.authLoading.collectAsStateWithLifecycle()
             val strings = remember(preferences.languageCode) { stringsFor(preferences.languageCode) }
             val layoutDirection = if (strings.isArabic) LayoutDirection.Rtl else LayoutDirection.Ltr
 
             AlUqabiCinemaTheme {
                 CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
-                    if (currentProfile == null) {
-                        AuthScreen(
+                    when {
+                        authLoading -> Box(
+                            modifier = Modifier.fillMaxSize().background(CinemaBackground),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = CinemaRed)
+                        }
+
+                        currentProfile == null -> AuthScreen(
                             viewModel = authViewModel,
                             strings = strings,
                             onToggleLanguage = { cinemaViewModel.setLanguage(if (preferences.languageCode == "ar") "en" else "ar") }
                         )
-                    } else {
-                        MainCinemaApp(
+
+                        else -> MainCinemaApp(
                             cinemaViewModel = cinemaViewModel,
                             okHttpClient = container.okHttpClient,
                             strings = strings,
                             profile = currentProfile!!,
                             isInPipMode = isInPipMode,
-                            onPlayerActiveChanged = { active -> isPlayerActive = active },
+                            onPlayerActiveChanged = { active ->
+                                isPlayerActive = active
+                                if (!active) pipEntryRequested = false
+                                updatePictureInPictureParams(active)
+                            },
                             onEnterPip = { enterPlayerPipMode() }
                         )
                     }
@@ -116,18 +138,42 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (isPlayerActive) enterPlayerPipMode()
+        enterPlayerPipMode()
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode)
+        isInPipMode = isInPictureInPictureMode
+        if (!isInPictureInPictureMode) pipEntryRequested = false
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         isInPipMode = isInPictureInPictureMode
+        if (!isInPictureInPictureMode) pipEntryRequested = false
+    }
+
+    private fun buildPictureInPictureParams(autoEnter: Boolean): PictureInPictureParams {
+        val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9))
+        val sourceRect = Rect()
+        window.decorView.getGlobalVisibleRect(sourceRect)
+        if (!sourceRect.isEmpty) builder.setSourceRectHint(sourceRect)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setAutoEnterEnabled(autoEnter)
+        return builder.build()
+    }
+
+    private fun updatePictureInPictureParams(active: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        runCatching { setPictureInPictureParams(buildPictureInPictureParams(active && isPlayerActive)) }
     }
 
     private fun enterPlayerPipMode() {
-        runCatching {
-            enterPictureInPictureMode(PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build())
-        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (!isPlayerActive || isInPipMode || pipEntryRequested) return
+        pipEntryRequested = true
+        val entered = runCatching { enterPictureInPictureMode(buildPictureInPictureParams(true)) }.isSuccess
+        if (!entered) pipEntryRequested = false
     }
 }
 
@@ -151,13 +197,28 @@ private fun MainCinemaApp(
     val watchHistory by cinemaViewModel.watchHistory.collectAsStateWithLifecycle()
     val searchResults by cinemaViewModel.searchResults.collectAsStateWithLifecycle()
     val isSearching by cinemaViewModel.isSearching.collectAsStateWithLifecycle()
+    val statusBanner by cinemaViewModel.statusBanner.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(statusBanner) {
+        val message = statusBanner ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+        cinemaViewModel.clearBanner()
+    }
+
+    LaunchedEffect(catalogState.tmdbStatusMessage) {
+        val message = catalogState.tmdbStatusMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+        cinemaViewModel.clearTmdbStatusMessage()
+    }
 
     var currentTab by remember { mutableStateOf(BottomTab.HOME) }
     var subRoute by remember { mutableStateOf(SubRoute.NONE) }
     var selectedDetailCard by remember { mutableStateOf<MediaCardItem?>(null) }
     var activePlayerRequest by remember { mutableStateOf<PlayerLaunchRequest?>(null) }
 
-    onPlayerActiveChanged(activePlayerRequest != null)
+    val isPlayerRequestActive = activePlayerRequest != null
+    LaunchedEffect(isPlayerRequestActive) { onPlayerActiveChanged(isPlayerRequestActive) }
 
     fun openDetails(card: MediaCardItem) {
         selectedDetailCard = card
@@ -176,18 +237,23 @@ private fun MainCinemaApp(
     }
 
     if (activePlayerRequest != null) {
-        NetflixPlayerScreen(
-            request = activePlayerRequest!!, strings = strings, preferences = preferences, okHttpClient = okHttpClient,
-            isInPipMode = isInPipMode, onEnterPip = onEnterPip,
-            onSaveProgress = { req, url, pos, dur -> cinemaViewModel.saveWatchProgress(req, url, pos, dur) },
-            onUpdateSubtitlePrefs = { size, textHex, bgHex -> cinemaViewModel.updateSubtitleDefaults(size, textHex, bgHex) },
-            onClose = { activePlayerRequest = null }
-        )
+        CinemaSnackbarOverlay(snackbarHostState) {
+            NetflixPlayerScreen(
+                request = activePlayerRequest!!, strings = strings, preferences = preferences, okHttpClient = okHttpClient,
+                isInPipMode = isInPipMode, onEnterPip = onEnterPip,
+                onSaveProgress = { req, url, pos, dur -> cinemaViewModel.saveWatchProgress(req, url, pos, dur) },
+                onUpdateSubtitlePrefs = { size, textHex, bgHex -> cinemaViewModel.updateSubtitleDefaults(size, textHex, bgHex) },
+                onClose = { activePlayerRequest = null }
+            )
+        }
         return
     }
 
-    if (subRoute != SubRoute.NONE) BackHandler { subRoute = SubRoute.NONE }
+    if (subRoute != SubRoute.NONE) BackHandler {
+        subRoute = if (subRoute == SubRoute.ADMIN) SubRoute.PROFILE else SubRoute.NONE
+    }
 
+    CinemaSnackbarOverlay(snackbarHostState) {
     when (subRoute) {
         SubRoute.PROFILE -> ProfileScreen(
             strings = strings, user = profile, favorites = favorites, history = watchHistory,
@@ -195,24 +261,34 @@ private fun MainCinemaApp(
             onFavoriteClick = { openDetails(it) },
             onHistoryClick = { resumeFromHistory(it) },
             onUpdateProfile = { n, e, p, c, cb -> cinemaViewModel.updateProfile(n, e, p, c, cb) },
-            onOpenAdmin = { if (profile.isAdmin) subRoute = SubRoute.ADMIN },
+            onOpenAdmin = {
+                scope.launch {
+                    if (cinemaViewModel.verifyAdminAccess()) subRoute = SubRoute.ADMIN
+                }
+            },
             onLogout = { subRoute = SubRoute.NONE; cinemaViewModel.logout() }
         )
 
-        SubRoute.ADMIN -> if (profile.isAdmin) {
+        SubRoute.ADMIN -> if (profile.isAdmin && !profile.isBanned) {
             AdminPanelScreen(
                 strings = strings, onBack = { subRoute = SubRoute.PROFILE },
+                onVerifyAccess = { onResult -> scope.launch { onResult(cinemaViewModel.verifyAdminAccess()) } },
                 onSearchUsers = cinemaViewModel::adminSearchUsers,
                 onSetRole = cinemaViewModel::adminSetRole,
                 onSetBanned = cinemaViewModel::adminSetBanned,
                 onListCatalog = cinemaViewModel::adminListCatalog,
                 onUpsertCatalog = cinemaViewModel::adminUpsertCatalog,
                 onDeleteCatalog = cinemaViewModel::adminDeleteCatalog,
+                onListEpisodes = cinemaViewModel::adminListEpisodes,
+                onUpsertEpisode = cinemaViewModel::adminUpsertEpisode,
+                onDeleteEpisode = cinemaViewModel::adminDeleteEpisode,
                 onListChannels = cinemaViewModel::adminListChannels,
                 onUpsertChannel = cinemaViewModel::adminUpsertChannel,
                 onDeleteChannel = cinemaViewModel::adminDeleteChannel
             )
-        } else { subRoute = SubRoute.NONE }
+        } else {
+            LaunchedEffect(Unit) { subRoute = SubRoute.PROFILE }
+        }
 
         SubRoute.SEARCH -> SearchScreen(strings = strings, results = searchResults, isSearching = isSearching, onQueryChange = cinemaViewModel::performSearch, onMediaClick = { openDetails(it) }, onBack = { subRoute = SubRoute.NONE })
 
@@ -236,6 +312,7 @@ private fun MainCinemaApp(
         }
 
         SubRoute.NONE -> Scaffold(
+            modifier = Modifier.fillMaxSize(),
             containerColor = CinemaBackground,
             topBar = { CinemaTopBar(title = strings.appName, onOpenProfile = { subRoute = SubRoute.PROFILE }, onOpenSearch = { subRoute = SubRoute.SEARCH }) },
             bottomBar = {
@@ -267,5 +344,17 @@ private fun MainCinemaApp(
                 }
             }
         }
+    }
+    }
+}
+
+@Composable
+private fun CinemaSnackbarOverlay(
+    snackbarHostState: SnackbarHostState,
+    content: @Composable () -> Unit
+) {
+    Box(Modifier.fillMaxSize()) {
+        content()
+        SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
     }
 }

@@ -2,6 +2,7 @@ package com.aluqabi.cinema.data.repository
 
 import android.content.Context
 import android.net.Uri
+import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.data.local.SettingsDataStore
 import com.aluqabi.cinema.data.local.dao.CachedCatalogDao
 import com.aluqabi.cinema.data.local.dao.CachedChannelDao
@@ -34,9 +35,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -62,6 +60,8 @@ class SourcesRepository(
 
     suspend fun refreshCloudContent(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            if (!AppConfig.isSupabaseConfigured) error("Supabase is not configured")
+            ensureCloudSource()
             val prefs = settingsDataStore.preferences.first()
             val token = prefs.accessToken.takeIf { it.isNotBlank() }
             val catalogRes = supabase.restGet("movies_catalog?select=*&order=created_at.desc", token).getOrThrow()
@@ -113,6 +113,25 @@ class SourcesRepository(
         }
     }
 
+    private suspend fun ensureCloudSource() {
+        val existing = sourceDao.getById(CLOUD_SOURCE_ID)
+        val cloudSource = SourceEntity(
+            id = CLOUD_SOURCE_ID,
+            name = "Supabase Cloud",
+            type = SourceType.JSON_CATALOG.name,
+            url = "supabase://cloud",
+            isEnabled = true,
+            itemCount = existing?.itemCount ?: 0,
+            lastSyncedAt = System.currentTimeMillis(),
+            lastError = null
+        )
+        if (existing == null) {
+            sourceDao.insert(cloudSource)
+        } else {
+            sourceDao.update(cloudSource)
+        }
+    }
+
     private fun parseQualities(arr: JsonArray, fallbackUrl: String): List<StreamQualityOption> {
         val parsed = arr.mapNotNull { el ->
             val obj = el.asObjOrNull() ?: return@mapNotNull null
@@ -132,6 +151,7 @@ class SourcesRepository(
 
     // Admin cloud CRUD
     suspend fun adminUpsertCatalogItem(payload: JsonObject, existingId: String?): Result<Unit> {
+        if (!AppConfig.isSupabaseConfigured) return Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         val token = prefs.accessToken.takeIf { it.isNotBlank() } ?: return Result.failure(IllegalStateException("Not signed in"))
         return if (existingId.isNullOrBlank()) {
@@ -142,12 +162,16 @@ class SourcesRepository(
     }
 
     suspend fun adminDeleteCatalogItem(id: String): Result<Unit> {
+        if (!AppConfig.isSupabaseConfigured) return Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         val token = prefs.accessToken.takeIf { it.isNotBlank() } ?: return Result.failure(IllegalStateException("Not signed in"))
-        return supabase.restDelete("movies_catalog?id=eq.$id", token).map { }
+        return supabase.restDelete("movies_catalog?id=eq.$id", token).onSuccess {
+            cachedCatalogDao.deleteBySourceId(CLOUD_SOURCE_ID)
+        }.map { }
     }
 
     suspend fun adminUpsertEpisode(payload: JsonObject, existingId: String?): Result<Unit> {
+        if (!AppConfig.isSupabaseConfigured) return Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         val token = prefs.accessToken.takeIf { it.isNotBlank() } ?: return Result.failure(IllegalStateException("Not signed in"))
         return if (existingId.isNullOrBlank()) supabase.restPost("series_episodes", payload, token).map { }
@@ -155,12 +179,14 @@ class SourcesRepository(
     }
 
     suspend fun adminDeleteEpisode(id: String): Result<Unit> {
+        if (!AppConfig.isSupabaseConfigured) return Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         val token = prefs.accessToken.takeIf { it.isNotBlank() } ?: return Result.failure(IllegalStateException("Not signed in"))
         return supabase.restDelete("series_episodes?id=eq.$id", token).map { }
     }
 
     suspend fun adminUpsertChannel(payload: JsonObject, existingId: String?): Result<Unit> {
+        if (!AppConfig.isSupabaseConfigured) return Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         val token = prefs.accessToken.takeIf { it.isNotBlank() } ?: return Result.failure(IllegalStateException("Not signed in"))
         return if (existingId.isNullOrBlank()) supabase.restPost("live_channels", payload, token).map { }
@@ -168,18 +194,30 @@ class SourcesRepository(
     }
 
     suspend fun adminDeleteChannel(id: String): Result<Unit> {
+        if (!AppConfig.isSupabaseConfigured) return Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         val token = prefs.accessToken.takeIf { it.isNotBlank() } ?: return Result.failure(IllegalStateException("Not signed in"))
-        return supabase.restDelete("live_channels?id=eq.$id", token).map { }
+        return supabase.restDelete("live_channels?id=eq.$id", token).onSuccess {
+            cachedChannelDao.deleteBySourceId(CLOUD_SOURCE_ID)
+        }.map { }
     }
 
     suspend fun adminListCatalog(): Result<List<JsonObject>> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         supabase.restGet("movies_catalog?select=*&order=created_at.desc&limit=200", prefs.accessToken.takeIf { it.isNotBlank() })
             .map { it.asArrOrEmpty().mapNotNull { e -> e.asObjOrNull() } }
     }
 
+    suspend fun adminListEpisodes(): Result<List<JsonObject>> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(IllegalStateException("Supabase is not configured"))
+        val prefs = settingsDataStore.preferences.first()
+        supabase.restGet("series_episodes?select=*&order=series_tmdb_id.asc,season_number.asc,episode_number.asc&limit=300", prefs.accessToken.takeIf { it.isNotBlank() })
+            .map { it.asArrOrEmpty().mapNotNull { e -> e.asObjOrNull() } }
+    }
+
     suspend fun adminListChannels(): Result<List<JsonObject>> = withContext(Dispatchers.IO) {
+        if (!AppConfig.isSupabaseConfigured) return@withContext Result.failure(IllegalStateException("Supabase is not configured"))
         val prefs = settingsDataStore.preferences.first()
         supabase.restGet("live_channels?select=*&order=created_at.desc&limit=200", prefs.accessToken.takeIf { it.isNotBlank() })
             .map { it.asArrOrEmpty().mapNotNull { e -> e.asObjOrNull() } }
