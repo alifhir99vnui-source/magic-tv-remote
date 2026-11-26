@@ -25,6 +25,29 @@ if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
   exit 1
 fi
 
+accept_sdk_licenses() {
+  local sdkmanager="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}/cmdline-tools/latest/bin/sdkmanager"
+  if [[ ! -x "$sdkmanager" ]]; then
+    sdkmanager="$(command -v sdkmanager || true)"
+  fi
+  if [[ -z "$sdkmanager" || ! -x "$sdkmanager" ]]; then
+    echo "sdkmanager was not found in the Android SDK." >&2
+    return 1
+  fi
+  set +e
+  set +o pipefail
+  yes | "$sdkmanager" --licenses >/dev/null 2>&1
+  local sdk_status=${PIPESTATUS[1]}
+  set -o pipefail
+  set -e
+  if [[ "$sdk_status" -ne 0 ]]; then
+    echo "Failed to accept Android SDK licenses." >&2
+    return "$sdk_status"
+  fi
+}
+
+accept_sdk_licenses
+
 value_from_properties() {
   [[ -f local.properties ]] || return 0
   sed -n "s/^$1=//p" local.properties | head -n 1
