@@ -1,29 +1,78 @@
-# Magic TV Remote
-Expo + React Native app with a local Kotlin Android module for ADB over TCP control with RSA authorization and Bluetooth HID keyboard/consumer navigation.
+# سينما العقابي · Al-Uqabi Cinema
 
-## Build
+تطبيق **Native Android** احترافي مبني بـ **Kotlin + Jetpack Compose + Media3 (ExoPlayer)** لمشاهدة الأفلام والمسلسلات وقنوات البث المباشر بتصميم داكن مستوحى من Netflix، مع دعم كامل للغة العربية (**RTL**) والإنجليزية (**LTR**).
 
-Requirements: Node.js 20, JDK 17, Android SDK platform 35, Android build tools 35, and a configured `ANDROID_HOME`.
+## المميزات الرئيسية
 
-```sh
-npm install
-npx expo prebuild --platform android
-cd android
-./gradlew assembleRelease
+- **هوية مرنة بدون أيقونة مخصصة:** يستخدم التطبيق الأيقونة الافتراضية القياسية لنظام أندرويد في `AndroidManifest.xml` لتتمكن من إضافة الشعار الخاص بك (`ic_launcher`) لاحقاً.
+- **نظام حسابات محلي متكامل (Room + DataStore):**
+  - تسجيل الدخول وإنشاء حساب بالبريد الإلكتروني وكلمة المرور مع تحقق صارم وتشفير SHA-256 بملح عشوائي (Salt).
+  - تسجيل الدخول عبر رقم الهاتف ورمز التحقق (OTP المحلي).
+  - أزرار تسجيل سريع عبر Google و Facebook.
+  - أيقونة **☰** في الشريط العلوي تفتح شاشة **الملف الشخصي** المنفصلة عن الإعدادات (تعديل البيانات، المفضلة، سجل المشاهدة، تسجيل الخروج).
+- **5 أقسام رئيسية في الشريط السفلي:** الرئيسية، أفلام، مسلسلات، بث مباشر، الإعدادات.
+- **مصادر مرنة وربط تلقائي مع TMDB:**
+  - جلب البوسترات والتقييمات والتفاصيل والمواسم والحلقات من **TMDB API** (مفتاح v3 أو Bearer Token من الإعدادات).
+  - إضافة وتعديل ومزامنة قوائم **M3U / IPTV**، وملفات **JSON**، والروابط المباشرة (`MP4` / `M3U8`) من الإعدادات أو من ذاكرة الجهاز.
+  - مطابقة تلقائية بين أعمال TMDB ومصادرك عبر `tmdb_id` أو الاسم، مع إمكانية لصق رابط مباشر لأي فيلم أو حلقة.
+- **مشغّل Media3 / ExoPlayer داخلي 100% بمواصفات احترافية:**
+  - واجهة بدون أي إيموجي (أيقونات Vector فقط) مع إخفاء تلقائي بعد 3 ثوانٍ.
+  - أزرار تقديم وتأخير **±10 ثوانٍ** + النقر المزدوج (Double-Tap) مع حركة انسيابية.
+  - **إيماءات السحب على الأطراف:** الطرف الأيمن للتحكم بالصوت والطرف الأيسر للتحكم بالإضاءة مع مؤشر HUD عمودي.
+  - **Pinch-to-Zoom** بإصبعين + زر تبديل أبعاد الشاشة (**Fit / Fill / Zoom / Stretch**).
+  - اختيار جودة الفيديو والمسار الصوتي (الدبلجة).
+  - إدارة الترجمة الكاملة (**SRT / VTT** من الهاتف أو رابط أو مدمجة) مع تغيير حجم الخط، لون النص، لون الخلفية، وتوقيت الترجمة (**±ms**).
+  - قفل الشاشة، سرعة التشغيل (`0.5x` إلى `2.0x`)، تدوير الشاشة، صورة داخل صورة (**PiP**)، قائمة الحلقات وزر **الحلقة التالية**، وحفظ آخر موضع للمشاهدة تلقائياً.
+
+## صيغة ملف JSON المدعومة للمصادر
+
+```json
+{
+  "movies": [
+    {
+      "tmdb_id": 550,
+      "title": "Fight Club",
+      "title_ar": "نادي القتال",
+      "year": "1999",
+      "rating": 8.4,
+      "qualities": [
+        { "label": "1080p", "url": "https://example.com/movie-1080.mp4" },
+        { "label": "720p", "url": "https://example.com/movie-720.mp4" }
+      ],
+      "subtitles": [
+        { "label": "العربية", "language": "ar", "url": "https://example.com/movie-ar.srt" }
+      ]
+    }
+  ],
+  "series": [
+    {
+      "tmdb_id": 1396,
+      "title": "Breaking Bad",
+      "seasons": [
+        {
+          "season_number": 1,
+          "episodes": [
+            {
+              "episode_number": 1,
+              "title": "Pilot",
+              "stream_url": "https://example.com/s1e1.m3u8"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "Baghdad TV",
+      "group": "Iraq",
+      "logo": "https://example.com/logo.png",
+      "stream_url": "https://example.com/live.m3u8"
+    }
+  ]
+}
 ```
 
-In Termux, install Node.js and JDK 17 first and install/configure the Android SDK command line tools. `expo run:android` requires a connected device or emulator; it is not needed to build the APK.
+## بناء ملف APK
 
-The APK is written to `android/app/build/outputs/apk/release/app-release.apk`.
-
-Termux requires Node.js, JDK 17, Android SDK platform 35, build tools, and a Gradle wrapper download. GitHub Actions is configured in `.github/workflows/android.yml` and uses Java 17.
-
-See [third-party notices](THIRD_PARTY_NOTICES.md) for the ADB library license.
-
-## Known platform limits
-
-- TCP probe and auto scan send a real ADB CNXN packet and accept only a valid ADB CNXN/AUTH response. Connecting performs the RSA authentication handshake and keeps an authenticated ADB session open for keyevents. The TV must have ADB over TCP enabled and the user must accept the RSA prompt.
-- Bluetooth navigation uses the Android HID Device profile (Android 9+), which is unavailable on some phone chipsets/firmware. The TV must pair with the phone through its Bluetooth settings, then the app connects to the bonded host.
-- Wi-Fi controls use Android KEYCODE values via `input keyevent`; voice search opens Global Search then sends KEYCODE_SEARCH. Whether this opens a microphone UI depends on the TV firmware. Bluetooth uses standard HID keyboard and consumer reports; TV firmware may ignore unsupported consumer usages.
-
-The GitHub Actions workflow `.github/workflows/android.yml` builds the release APK and uploads it as a workflow artifact. It is the easiest build path when Termux does not have a configured Android SDK. The APK is unsigned for distribution unless a signing configuration is added.
+المشروع مجهز للبناء التلقائي عبر **GitHub Actions** (`.github/workflows/android.yml`) الذي ينفّذ الاختبارات وينتج ملفات `app-debug.apk` و `app-release.apk`، أو عبر فتح المجلد مباشرة في **Android Studio** (JDK 17, Android SDK 35).

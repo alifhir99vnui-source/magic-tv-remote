@@ -1,0 +1,3 @@
+-keep class com.aluqabi.cinema.data.remote.model.** { *; }
+-keep class com.aluqabi.cinema.data.source.model.** { *; }
+-dontwarn kotlinx.serialization.**

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AlUqabiCinema" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/cinema_background</item>
+        <item name="android:statusBarColor">@color/cinema_background</item>
+        <item name="android:navigationBarColor">@color/cinema_background</item>
+    </style>
+
+    <color name="cinema_background">#07080B</color>
+</resources>
