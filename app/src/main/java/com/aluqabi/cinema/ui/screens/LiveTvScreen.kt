@@ -60,8 +60,7 @@ import com.aluqabi.cinema.ui.theme.TextSecondary
 fun LiveTvScreen(
     strings: AppStrings,
     channels: List<LiveChannelItem>,
-    onChannelClick: (LiveChannelItem) -> Unit,
-    onOpenSettings: () -> Unit
+    onChannelClick: (LiveChannelItem) -> Unit
 ) {
     var selectedGroup by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -89,9 +88,7 @@ fun LiveTvScreen(
             EmptyStateCard(
                 icon = Icons.Rounded.LiveTv,
                 title = strings.noChannelsTitle,
-                description = strings.noChannelsDesc,
-                actionLabel = strings.openSettings,
-                onAction = onOpenSettings
+                description = strings.noChannelsDesc
             )
             return@Column
         }

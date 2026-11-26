@@ -29,7 +29,7 @@ import com.aluqabi.cinema.data.local.entity.WatchHistoryEntity
         CachedChannelEntity::class,
         CachedCatalogItemEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -47,7 +47,7 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "al_uqabi_cinema.db"
-            ).build()
+            ).fallbackToDestructiveMigration().build()
         }
     }
 }

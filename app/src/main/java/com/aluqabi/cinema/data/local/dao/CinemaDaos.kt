@@ -64,20 +64,32 @@ interface FavoriteDao {
     @Query("SELECT * FROM favorites WHERE userId = :userId ORDER BY addedAt DESC")
     fun observeForUser(userId: Long): Flow<List<FavoriteEntity>>
 
+    @Query("SELECT * FROM favorites WHERE cloudUserId = :userId ORDER BY addedAt DESC")
+    fun observeForUserLegacy(userId: String): Flow<List<FavoriteEntity>>
+
     @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE recordKey = :recordKey)")
     fun observeIsFavorite(recordKey: String): Flow<Boolean>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM favorites WHERE recordKey = :recordKey)")
+    fun observeIsFavoriteLegacy(recordKey: String): Flow<Boolean>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(favorite: FavoriteEntity)
 
     @Query("DELETE FROM favorites WHERE recordKey = :recordKey")
     suspend fun deleteByKey(recordKey: String)
+
+    @Query("DELETE FROM favorites WHERE cloudUserId = :userId")
+    suspend fun clearForCloudUser(userId: String)
 }
 
 @Dao
 interface WatchHistoryDao {
     @Query("SELECT * FROM watch_history WHERE userId = :userId ORDER BY updatedAt DESC")
     fun observeForUser(userId: Long): Flow<List<WatchHistoryEntity>>
+
+    @Query("SELECT * FROM watch_history WHERE cloudUserId = :userId ORDER BY updatedAt DESC")
+    fun observeForCloudUser(userId: String): Flow<List<WatchHistoryEntity>>
 
     @Query("SELECT * FROM watch_history WHERE recordKey = :recordKey LIMIT 1")
     suspend fun getByKey(recordKey: String): WatchHistoryEntity?
@@ -87,6 +99,9 @@ interface WatchHistoryDao {
 
     @Query("DELETE FROM watch_history WHERE userId = :userId")
     suspend fun clearForUser(userId: Long)
+
+    @Query("DELETE FROM watch_history WHERE cloudUserId = :userId")
+    suspend fun clearForCloudUser(userId: String)
 }
 
 @Dao

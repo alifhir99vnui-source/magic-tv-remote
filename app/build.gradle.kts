@@ -21,45 +21,24 @@ android {
         applicationId = "com.aluqabi.cinema"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "2.0.0"
+        versionCode = 2
+        versionName = "2.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField(
-            "String",
-            "SUPABASE_URL",
-            resolveConfigValue("SUPABASE_URL", "https://YOUR_PROJECT_REF.supabase.co")
-        )
-        buildConfigField(
-            "String",
-            "SUPABASE_ANON_KEY",
-            resolveConfigValue("SUPABASE_ANON_KEY", "YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY")
-        )
-        buildConfigField(
-            "String",
-            "TMDB_API_KEY",
-            resolveConfigValue("TMDB_API_KEY", "YOUR_TMDB_API_KEY")
-        )
-        buildConfigField(
-            "String",
-            "GOOGLE_WEB_CLIENT_ID",
-            resolveConfigValue("GOOGLE_WEB_CLIENT_ID", "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com")
-        )
+        buildConfigField("String", "SUPABASE_URL", resolveConfigValue("SUPABASE_URL", "https://YOUR_PROJECT_REF.supabase.co"))
+        buildConfigField("String", "SUPABASE_ANON_KEY", resolveConfigValue("SUPABASE_ANON_KEY", "YOUR_SUPABASE_ANON_OR_PUBLISHABLE_KEY"))
+        buildConfigField("String", "TMDB_API_KEY", resolveConfigValue("TMDB_API_KEY", "YOUR_TMDB_API_KEY"))
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", resolveConfigValue("GOOGLE_WEB_CLIENT_ID", "YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com"))
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
-        debug {
-            isMinifyEnabled = false
-        }
+        debug { isMinifyEnabled = false }
     }
 
     compileOptions {
@@ -67,9 +46,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 
     buildFeatures {
         compose = true
@@ -77,9 +54,7 @@ android {
     }
 
     packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
+        resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
 
@@ -115,7 +90,7 @@ dependencies {
     implementation(libs.googleid)
 
     implementation(libs.retrofit)
-    implementation(libs.retrofit.kotlinx-serialization)
+    implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)

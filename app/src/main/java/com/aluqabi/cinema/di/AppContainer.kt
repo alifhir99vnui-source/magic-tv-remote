@@ -3,6 +3,7 @@ package com.aluqabi.cinema.di
 import android.content.Context
 import com.aluqabi.cinema.data.local.AppDatabase
 import com.aluqabi.cinema.data.local.SettingsDataStore
+import com.aluqabi.cinema.data.remote.SupabaseClient
 import com.aluqabi.cinema.data.remote.TmdbApiService
 import com.aluqabi.cinema.data.repository.AuthRepository
 import com.aluqabi.cinema.data.repository.CatalogRepository
@@ -14,9 +15,6 @@ import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.concurrent.TimeUnit
 
-/**
- * Manual dependency container providing shared singletons across ViewModels and Screens.
- */
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
@@ -29,10 +27,7 @@ class AppContainer(context: Context) {
         .followRedirects(true)
         .build()
 
-    private val json: Json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-    }
+    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private val retrofit: Retrofit = Retrofit.Builder()
         .baseUrl("https://api.themoviedb.org/3/")
@@ -41,15 +36,18 @@ class AppContainer(context: Context) {
         .build()
 
     val tmdbApiService: TmdbApiService = retrofit.create(TmdbApiService::class.java)
+    val supabaseClient: SupabaseClient = SupabaseClient(okHttpClient)
 
     val authRepository: AuthRepository = AuthRepository(
-        userDao = database.userDao(),
+        supabase = supabaseClient,
         settingsDataStore = settingsDataStore
     )
 
     val sourcesRepository: SourcesRepository = SourcesRepository(
         context = appContext,
         okHttpClient = okHttpClient,
+        supabase = supabaseClient,
+        settingsDataStore = settingsDataStore,
         sourceDao = database.sourceDao(),
         cachedChannelDao = database.cachedChannelDao(),
         cachedCatalogDao = database.cachedCatalogDao(),
@@ -58,6 +56,8 @@ class AppContainer(context: Context) {
 
     val catalogRepository: CatalogRepository = CatalogRepository(
         tmdbApi = tmdbApiService,
+        supabase = supabaseClient,
+        settingsDataStore = settingsDataStore,
         cachedCatalogDao = database.cachedCatalogDao(),
         favoriteDao = database.favoriteDao(),
         watchHistoryDao = database.watchHistoryDao(),

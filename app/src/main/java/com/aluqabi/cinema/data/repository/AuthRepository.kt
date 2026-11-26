@@ -1,213 +1,280 @@
 package com.aluqabi.cinema.data.repository
 
+import com.aluqabi.cinema.config.AppConfig
 import com.aluqabi.cinema.data.local.PasswordHasher
 import com.aluqabi.cinema.data.local.SettingsDataStore
-import com.aluqabi.cinema.data.local.dao.UserDao
-import com.aluqabi.cinema.data.local.entity.UserEntity
-import com.aluqabi.cinema.config.AppConfig
+import com.aluqabi.cinema.data.remote.SupabaseClient
+import com.aluqabi.cinema.data.remote.arr
+import com.aluqabi.cinema.data.remote.asArrOrEmpty
+import com.aluqabi.cinema.data.remote.asObjOrNull
+import com.aluqabi.cinema.data.remote.bool
+import com.aluqabi.cinema.data.remote.long
+import com.aluqabi.cinema.data.remote.str
+import com.aluqabi.cinema.domain.model.UserProfile
+import com.aluqabi.cinema.domain.model.UserRole
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
-import kotlin.random.Random
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 sealed interface AuthResult {
-    data class Success(val user: UserEntity) : AuthResult
+    data class Success(val profile: UserProfile) : AuthResult
     data class Error(val messageAr: String, val messageEn: String) : AuthResult
+    data class Info(val messageAr: String, val messageEn: String) : AuthResult
 }
 
-/**
- * Handles local authentication (Email/Password, Phone OTP, Google/Facebook quick profile)
- * backed by Room and DataStore session persistence.
- */
 class AuthRepository(
-    private val userDao: UserDao,
+    private val supabase: SupabaseClient,
     private val settingsDataStore: SettingsDataStore
 ) {
-    private val http = OkHttpClient()
-    private val jsonType = "application/json".toMediaType()
-    private val avatarPalette = listOf(
-        0xFFE50914L,
-        0xFF1E88E5L,
-        0xFF00897BL,
-        0xFF8E24AAL,
-        0xFFF4511EL
-    )
-
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val currentUser: Flow<UserEntity?> = settingsDataStore.preferences.flatMapLatest { prefs ->
-        val uid = prefs.currentUserId
-        if (uid == null) flowOf(null) else userDao.observeById(uid)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val currentProfile: Flow<UserProfile?> = settingsDataStore.preferences.flatMapLatest { prefs ->
+        if (!prefs.isLoggedIn) flowOf(null)
+        else flow { emit(fetchProfile(prefs.userId, prefs.accessToken).getOrNull()) }
     }
 
-    suspend fun signUpWithEmail(
-        name: String,
-        email: String,
-        password: String,
-        confirmPassword: String
-    ): AuthResult {
+    suspend fun refreshCurrentProfile(): UserProfile? {
+        val prefs = settingsDataStore.preferences.first()
+        if (!prefs.isLoggedIn) return null
+        return fetchProfile(prefs.userId, prefs.accessToken).getOrNull()
+    }
+
+
+    suspend fun signUpWithEmail(name: String, email: String, password: String, confirmPassword: String): AuthResult {
         val cleanName = name.trim()
         val cleanEmail = email.trim()
-        if (cleanName.length < 2) {
-            return AuthResult.Error(
-                "يرجى إدخال اسم لا يقل عن حرفين",
-                "Please enter a name with at least 2 characters"
-            )
-        }
-        if (!PasswordHasher.isValidEmail(cleanEmail)) {
-            return AuthResult.Error(
-                "صيغة البريد الإلكتروني غير صحيحة",
-                "Invalid email address format"
-            )
-        }
-        if (!PasswordHasher.isStrongPassword(password)) {
-            return AuthResult.Error(
-                "كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي على حروف وأرقام",
-                "Password must be at least 8 characters and include letters and numbers"
-            )
-        }
-        if (password != confirmPassword) {
-            return AuthResult.Error(
-                "كلمتا المرور غير متطابقتين",
-                "Passwords do not match"
-            )
-        }
-        return requestSupabaseAuth("/auth/v1/signup", cleanEmail, password, cleanName, createSession = false)
-    }
+        if (cleanName.length < 2) return AuthResult.Error("يرجى إدخال اسم لا يقل عن حرفين", "Please enter a name with at least 2 characters")
+        if (!PasswordHasher.isValidEmail(cleanEmail)) return AuthResult.Error("صيغة البريد الإلكتروني غير صحيحة", "Invalid email address format")
+        if (!PasswordHasher.isStrongPassword(password)) return AuthResult.Error("كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي على حروف وأرقام", "Password must be at least 8 characters and include letters and numbers")
+        if (password != confirmPassword) return AuthResult.Error("كلمتا المرور غير متطابقتين", "Passwords do not match")
+        if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
 
-    suspend fun signInWithEmail(email: String, password: String): AuthResult {
-        val cleanEmail = email.trim()
-        if (!PasswordHasher.isValidEmail(cleanEmail)) {
-            return AuthResult.Error(
-                "صيغة البريد الإلكتروني غير صحيحة",
-                "Invalid email address format"
-            )
-        }
-        if (password.isEmpty()) {
-            return AuthResult.Error(
-                "يرجى إدخال كلمة المرور",
-                "Please enter your password"
-            )
-        }
-        return requestSupabaseAuth("/auth/v1/token?grant_type=password", cleanEmail, password, createSession = true)
-    }
-
-    private suspend fun requestSupabaseAuth(
-        path: String,
-        email: String,
-        password: String,
-        name: String = "",
-        createSession: Boolean
-    ): AuthResult = withContext(Dispatchers.IO) {
-        if (!AppConfig.isSupabaseConfigured) return@withContext AuthResult.Error(
-            "لم يتم إعداد الاتصال السحابي بعد", "Cloud authentication is not configured"
+        val res = supabase.authPost(
+            "/auth/v1/signup",
+            buildJsonObject {
+                put("email", cleanEmail)
+                put("password", password)
+                put("data", buildJsonObject { put("name", cleanName) })
+            }
         )
-        try {
-            val payload = JSONObject().put("email", email).put("password", password)
-            if (name.isNotBlank()) payload.put("data", JSONObject().put("name", name))
-            val request = Request.Builder()
-                .url(AppConfig.SUPABASE_URL + path)
-                .header("apikey", AppConfig.SUPABASE_ANON_KEY)
-                .header("Content-Type", "application/json")
-                .post(payload.toString().toRequestBody(jsonType))
-                .build()
-            http.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                val result = JSONObject(body.ifBlank { "{}" })
-                if (!response.isSuccessful) {
-                    val message = result.optString("msg", result.optString("message", "Authentication failed"))
-                    return@withContext AuthResult.Error(message, message)
-                }
-                val account = result.optJSONObject("user") ?: result
-                val accountEmail = account.optString("email", email)
-                val accountName = account.optJSONObject("user_metadata")?.optString("name")
-                    ?.takeIf { it.isNotBlank() } ?: name.ifBlank { accountEmail.substringBefore('@') }
-                if (createSession && result.optString("access_token").isBlank()) {
-                    return@withContext AuthResult.Error(
-                        "الحساب يحتاج إلى تأكيد البريد الإلكتروني", "Please confirm your email before signing in"
-                    )
-                }
-                if (!createSession && result.optString("access_token").isBlank()) {
-                    return@withContext AuthResult.Error(
+        return res.fold(
+            onSuccess = { obj ->
+                val hasSession = obj.str("access_token").isNotBlank()
+                if (hasSession) {
+                    saveSessionFromAuth(obj)
+                    val profile = refreshCurrentProfile()
+                    if (profile != null) AuthResult.Success(profile)
+                    else AuthResult.Info("تم إنشاء الحساب", "Account created")
+                } else {
+                    AuthResult.Info(
                         "تم إنشاء الحساب. أكّد بريدك الإلكتروني ثم سجّل الدخول.",
                         "Account created. Confirm your email, then sign in."
                     )
                 }
-                val existing = userDao.getByEmail(accountEmail)
-                val signedUser = existing?.copy(name = accountName, authProvider = "SUPABASE") ?: UserEntity(
-                    name = accountName, email = accountEmail, authProvider = "SUPABASE",
-                    avatarColorHex = avatarPalette.random()
-                )
-                val id = if (existing == null) userDao.insert(signedUser) else {
-                    userDao.update(signedUser); existing.id
-                }
-                val saved = signedUser.copy(id = id)
-                settingsDataStore.setCurrentUserId(id)
-                AuthResult.Success(saved)
-            }
-        } catch (e: Exception) {
-            AuthResult.Error("تعذر الاتصال بخدمة تسجيل الدخول", e.message ?: "Could not reach Supabase Auth")
-        }
+            },
+            onFailure = { AuthResult.Error(it.message ?: "فشل إنشاء الحساب", it.message ?: "Sign up failed") }
+        )
     }
 
-    fun generateLocalOtp(): String = ""
+    suspend fun signInWithEmail(email: String, password: String): AuthResult {
+        val cleanEmail = email.trim()
+        if (!PasswordHasher.isValidEmail(cleanEmail)) return AuthResult.Error("صيغة البريد الإلكتروني غير صحيحة", "Invalid email address format")
+        if (password.isBlank()) return AuthResult.Error("يرجى إدخال كلمة المرور", "Please enter your password")
+        if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
 
-    suspend fun signInWithPhoneOtp(
-        phone: String,
-        displayName: String,
-        enteredCode: String,
-        expectedCode: String
-    ): AuthResult {
+        val res = supabase.authPost(
+            "/auth/v1/token?grant_type=password",
+            buildJsonObject { put("email", cleanEmail); put("password", password) }
+        )
+        return res.fold(
+            onSuccess = { obj ->
+                saveSessionFromAuth(obj)
+                val profile = refreshCurrentProfile()
+                if (profile != null) AuthResult.Success(profile)
+                else AuthResult.Error("تم الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
+            },
+            onFailure = { AuthResult.Error(it.message ?: "فشل تسجيل الدخول", it.message ?: "Sign in failed") }
+        )
+    }
+
+    suspend fun sendPhoneOtp(phone: String): AuthResult {
         val cleanPhone = PasswordHasher.normalizePhone(phone)
         if (!PasswordHasher.isValidPhone(cleanPhone)) return AuthResult.Error("رقم الهاتف غير صالح", "Invalid phone number")
-        if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("الاتصال السحابي غير مُعد", "Cloud authentication is not configured")
-        return withContext(Dispatchers.IO) {
-            try {
-                val request = Request.Builder().url("${AppConfig.SUPABASE_URL}/auth/v1/otp")
-                    .header("apikey", AppConfig.SUPABASE_ANON_KEY).header("Content-Type", "application/json")
-                    .post(JSONObject().put("phone", cleanPhone).toString().toRequestBody(jsonType)).build()
-                http.newCall(request).execute().use { res ->
-                    if (res.isSuccessful) AuthResult.Error("أُرسل رمز التحقق عبر SMS. أدخل الرمز لإكمال الدخول.", "SMS code sent. Enter the code to complete sign in.")
-                    else AuthResult.Error("تعذر إرسال الرمز", "Could not send verification code")
-                }
-            } catch (_: Exception) { AuthResult.Error("تعذر الاتصال بخدمة الدخول", "Could not reach Supabase Auth") }
-        }
-    }
-
-    suspend fun quickSignIn(provider: String, defaultName: String): AuthResult {
-        return AuthResult.Error("تسجيل الدخول عبر $provider غير مفعّل حتى إعداد OAuth السحابي", "$provider sign-in requires configured OAuth credentials")
-    }
-
-    suspend fun updateProfile(user: UserEntity, newName: String, newEmail: String?, newPhone: String?, newAvatarColor: Long): AuthResult {
-        val cleanName = newName.trim()
-        if (cleanName.length < 2) {
-            return AuthResult.Error("الاسم قصير جداً", "Name is too short")
-        }
-        val cleanEmail = newEmail?.trim()?.takeIf { it.isNotEmpty() }
-        if (cleanEmail != null && !PasswordHasher.isValidEmail(cleanEmail)) {
-            return AuthResult.Error("البريد الإلكتروني غير صحيح", "Invalid email format")
-        }
-        val cleanPhone = newPhone?.let { PasswordHasher.normalizePhone(it) }?.takeIf { it.isNotEmpty() }
-        if (cleanPhone != null && !PasswordHasher.isValidPhone(cleanPhone)) {
-            return AuthResult.Error("رقم الهاتف غير صحيح", "Invalid phone number")
-        }
-        val updated = user.copy(
-            name = cleanName,
-            email = cleanEmail,
-            phone = cleanPhone,
-            avatarColorHex = newAvatarColor
+        if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
+        val res = supabase.authPost("/auth/v1/otp", buildJsonObject { put("phone", cleanPhone) })
+        return res.fold(
+            onSuccess = { AuthResult.Info("تم إرسال رمز التحقق عبر SMS", "SMS verification code sent") },
+            onFailure = { AuthResult.Error(it.message ?: "تعذر إرسال الرمز", it.message ?: "Could not send code") }
         )
-        userDao.update(updated)
-        return AuthResult.Success(updated)
     }
 
-    suspend fun logout() {
-        settingsDataStore.setCurrentUserId(null)
+    suspend fun verifyPhoneOtp(phone: String, code: String, name: String): AuthResult {
+        val cleanPhone = PasswordHasher.normalizePhone(phone)
+        val cleanCode = code.trim()
+        if (!PasswordHasher.isValidPhone(cleanPhone)) return AuthResult.Error("رقم الهاتف غير صالح", "Invalid phone number")
+        if (cleanCode.length < 4) return AuthResult.Error("رمز التحقق غير صحيح", "Invalid verification code")
+        val res = supabase.authPost(
+            "/auth/v1/verify",
+            buildJsonObject {
+                put("phone", cleanPhone)
+                put("token", cleanCode)
+                put("type", "sms")
+                put("data", buildJsonObject { put("name", name.trim().ifBlank { cleanPhone }) })
+            }
+        )
+        return res.fold(
+            onSuccess = { obj ->
+                saveSessionFromAuth(obj)
+                val profile = refreshCurrentProfile()
+                if (profile != null) AuthResult.Success(profile)
+                else AuthResult.Error("تم التحقق لكن تعذر تحميل الملف الشخصي", "Verified but failed to load profile")
+            },
+            onFailure = { AuthResult.Error(it.message ?: "فشل التحقق", it.message ?: "Verification failed") }
+        )
     }
+
+    suspend fun signInWithGoogleIdToken(idToken: String): AuthResult {
+        if (!AppConfig.isSupabaseConfigured) return AuthResult.Error("لم يتم إعداد Supabase", "Supabase is not configured")
+        val res = supabase.authPost(
+            "/auth/v1/token?grant_type=id_token",
+            buildJsonObject {
+                put("provider", "google")
+                put("id_token", idToken)
+            }
+        )
+        return res.fold(
+            onSuccess = { obj ->
+                saveSessionFromAuth(obj)
+                ensureProfileExists()
+                val profile = refreshCurrentProfile()
+                if (profile != null) AuthResult.Success(profile)
+                else AuthResult.Error("تم تسجيل الدخول لكن تعذر تحميل الملف الشخصي", "Signed in but failed to load profile")
+            },
+            onFailure = { AuthResult.Error(it.message ?: "فشل تسجيل الدخول بجوجل", it.message ?: "Google sign-in failed") }
+        )
+    }
+
+    suspend fun signOut() {
+        settingsDataStore.setSession(null, null, null)
+    }
+
+    private suspend fun saveSessionFromAuth(obj: JsonObject) {
+        val accessToken = obj.str("access_token")
+        val refreshToken = obj.str("refresh_token")
+        val user = obj["user"]?.asObjOrNull()
+        val userId = user?.str("id").orEmpty().ifBlank { obj.str("user_id") }
+        if (accessToken.isNotBlank() && userId.isNotBlank()) {
+            settingsDataStore.setSession(accessToken, refreshToken, userId)
+        }
+    }
+
+    private suspend fun ensureProfileExists() {
+        val prefs = settingsDataStore.preferences.first()
+        if (!prefs.isLoggedIn) return
+        val existing = supabase.restGet("profiles?id=eq.${prefs.userId}&select=id", prefs.accessToken)
+        val hasRow = existing.getOrNull()?.asArrOrEmpty()?.isNotEmpty() == true
+        if (!hasRow) {
+            val user = supabase.authGet("/auth/v1/user", prefs.accessToken).getOrNull()
+            val meta = user?.get("user_metadata")?.asObjOrNull()
+            val name = meta?.str("name").orEmpty().ifBlank { meta?.str("full_name").orEmpty() }.ifBlank { "User" }
+            val email = user?.str("email").orEmpty()
+            val phone = user?.str("phone").orEmpty()
+            supabase.restPost(
+                "profiles",
+                buildJsonObject {
+                    put("id", prefs.userId)
+                    put("email", email)
+                    put("phone", phone)
+                    put("name", name)
+                    put("role", "user")
+                },
+                prefs.accessToken,
+                prefer = "resolution=merge-duplicates,return=minimal"
+            )
+        }
+    }
+
+    suspend fun fetchProfile(userId: String, accessToken: String): Result<UserProfile> = withContext(Dispatchers.IO) {
+        supabase.restGet("profiles?id=eq.$userId&select=*", accessToken).mapCatching { el ->
+            val row = el.asArrOrEmpty().firstOrNull()?.asObjOrNull() ?: error("Profile not found")
+            row.toProfile()
+        }
+    }
+
+    suspend fun updateProfile(name: String, email: String?, phone: String?, avatarColor: Long): AuthResult {
+        val prefs = settingsDataStore.preferences.first()
+        if (!prefs.isLoggedIn) return AuthResult.Error("يجب تسجيل الدخول", "You must be signed in")
+        val cleanName = name.trim()
+        if (cleanName.length < 2) return AuthResult.Error("الاسم قصير جداً", "Name is too short")
+        val cleanEmail = email?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanPhone = phone?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanEmail != null && !PasswordHasher.isValidEmail(cleanEmail)) return AuthResult.Error("البريد الإلكتروني غير صحيح", "Invalid email")
+        if (cleanPhone != null && !PasswordHasher.isValidPhone(cleanPhone)) return AuthResult.Error("رقم الهاتف غير صحيح", "Invalid phone")
+
+        val res = supabase.restPatch(
+            "profiles?id=eq.${prefs.userId}",
+            buildJsonObject {
+                put("name", cleanName)
+                if (cleanEmail != null) put("email", cleanEmail)
+                if (cleanPhone != null) put("phone", cleanPhone)
+                put("avatar_color", avatarColor)
+            },
+            prefs.accessToken
+        )
+        return res.fold(
+            onSuccess = {
+                val profile = refreshCurrentProfile()
+                if (profile != null) AuthResult.Success(profile) else AuthResult.Error("تعذر تحديث الملف الشخصي", "Profile update failed")
+            },
+            onFailure = { AuthResult.Error(it.message ?: "تعذر التحديث", it.message ?: "Update failed") }
+        )
+    }
+
+    suspend fun adminSearchUsers(query: String): Result<List<UserProfile>> {
+        val prefs = settingsDataStore.preferences.first()
+        if (!prefs.isLoggedIn) return Result.failure(IllegalStateException("Not signed in"))
+        val q = query.trim()
+        val filter = if (q.isBlank()) "select=*&order=created_at.desc&limit=50"
+        else "select=*&or=(email.ilike.*$q*,name.ilike.*$q*,phone.ilike.*$q*)&order=created_at.desc&limit=50"
+        return supabase.restGet("profiles?$filter", prefs.accessToken).map { el ->
+            el.asArrOrEmpty().mapNotNull { it.asObjOrNull()?.toProfile() }
+        }
+    }
+
+    suspend fun adminSetRole(userId: String, role: UserRole): Result<Unit> {
+        val prefs = settingsDataStore.preferences.first()
+        if (!prefs.isLoggedIn) return Result.failure(IllegalStateException("Not signed in"))
+        return supabase.restPatch(
+            "profiles?id=eq.$userId",
+            buildJsonObject { put("role", role.name.lowercase()) },
+            prefs.accessToken
+        ).map { }
+    }
+
+    suspend fun adminSetBanned(userId: String, banned: Boolean): Result<Unit> {
+        val prefs = settingsDataStore.preferences.first()
+        if (!prefs.isLoggedIn) return Result.failure(IllegalStateException("Not signed in"))
+        return supabase.restPatch(
+            "profiles?id=eq.$userId",
+            buildJsonObject { put("is_banned", banned) },
+            prefs.accessToken
+        ).map { }
+    }
+
+    private fun JsonObject.toProfile(): UserProfile = UserProfile(
+        id = str("id"),
+        email = str("email"),
+        phone = str("phone"),
+        name = str("name").ifBlank { "User" },
+        role = UserRole.from(str("role")),
+        isBanned = bool("is_banned"),
+        avatarColor = long("avatar_color").takeIf { it != 0L } ?: 0xFFE50914L
+    )
 }

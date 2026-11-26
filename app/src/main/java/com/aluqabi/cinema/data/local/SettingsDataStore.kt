@@ -16,24 +16,29 @@ private val Context.cinemaDataStore: DataStore<Preferences> by preferencesDataSt
 )
 
 data class AppPreferences(
-    val currentUserId: Long? = null,
+    val accessToken: String = "",
+    val refreshToken: String = "",
+    val userId: String = "",
     val languageCode: String = "ar",
-    val tmdbApiKey: String = "",
     val subtitleFontSizeSp: Float = 18f,
     val subtitleTextColorArgb: Long = 0xFFFFFFFFL,
     val subtitleBgColorArgb: Long = 0x99000000L,
     val defaultAspectMode: String = "FIT"
-)
+) {
+    val isLoggedIn: Boolean get() = accessToken.isNotBlank() && userId.isNotBlank()
+}
 
 /**
- * Manages persisted app preferences, session state, TMDB API key, and subtitle appearance.
+ * Persists session tokens, language, and subtitle appearance.
+ * Developer keys/sources are embedded via AppConfig, not user-editable.
  */
 class SettingsDataStore(private val context: Context) {
 
     private object Keys {
-        val CURRENT_USER_ID = longPreferencesKey("current_user_id")
+        val ACCESS_TOKEN = stringPreferencesKey("access_token")
+        val REFRESH_TOKEN = stringPreferencesKey("refresh_token")
+        val USER_ID = stringPreferencesKey("user_id")
         val LANGUAGE_CODE = stringPreferencesKey("language_code")
-        val TMDB_API_KEY = stringPreferencesKey("tmdb_api_key")
         val SUBTITLE_FONT_SIZE = floatPreferencesKey("subtitle_font_size")
         val SUBTITLE_TEXT_COLOR = longPreferencesKey("subtitle_text_color")
         val SUBTITLE_BG_COLOR = longPreferencesKey("subtitle_bg_color")
@@ -42,9 +47,10 @@ class SettingsDataStore(private val context: Context) {
 
     val preferences: Flow<AppPreferences> = context.cinemaDataStore.data.map { prefs ->
         AppPreferences(
-            currentUserId = prefs[Keys.CURRENT_USER_ID],
+            accessToken = prefs[Keys.ACCESS_TOKEN] ?: "",
+            refreshToken = prefs[Keys.REFRESH_TOKEN] ?: "",
+            userId = prefs[Keys.USER_ID] ?: "",
             languageCode = prefs[Keys.LANGUAGE_CODE] ?: "ar",
-            tmdbApiKey = prefs[Keys.TMDB_API_KEY] ?: "",
             subtitleFontSizeSp = prefs[Keys.SUBTITLE_FONT_SIZE] ?: 18f,
             subtitleTextColorArgb = prefs[Keys.SUBTITLE_TEXT_COLOR] ?: 0xFFFFFFFFL,
             subtitleBgColorArgb = prefs[Keys.SUBTITLE_BG_COLOR] ?: 0x99000000L,
@@ -52,33 +58,25 @@ class SettingsDataStore(private val context: Context) {
         )
     }
 
-    suspend fun setCurrentUserId(userId: Long?) {
+    suspend fun setSession(accessToken: String?, refreshToken: String?, userId: String?) {
         context.cinemaDataStore.edit { prefs ->
-            if (userId == null) {
-                prefs.remove(Keys.CURRENT_USER_ID)
+            if (accessToken.isNullOrBlank() || userId.isNullOrBlank()) {
+                prefs.remove(Keys.ACCESS_TOKEN)
+                prefs.remove(Keys.REFRESH_TOKEN)
+                prefs.remove(Keys.USER_ID)
             } else {
-                prefs[Keys.CURRENT_USER_ID] = userId
+                prefs[Keys.ACCESS_TOKEN] = accessToken
+                prefs[Keys.REFRESH_TOKEN] = refreshToken.orEmpty()
+                prefs[Keys.USER_ID] = userId
             }
         }
     }
 
     suspend fun setLanguageCode(languageCode: String) {
-        context.cinemaDataStore.edit { prefs ->
-            prefs[Keys.LANGUAGE_CODE] = languageCode
-        }
+        context.cinemaDataStore.edit { prefs -> prefs[Keys.LANGUAGE_CODE] = languageCode }
     }
 
-    suspend fun setTmdbApiKey(apiKey: String) {
-        context.cinemaDataStore.edit { prefs ->
-            prefs[Keys.TMDB_API_KEY] = apiKey.trim()
-        }
-    }
-
-    suspend fun updateSubtitleStyle(
-        fontSizeSp: Float,
-        textColorArgb: Long,
-        bgColorArgb: Long
-    ) {
+    suspend fun updateSubtitleStyle(fontSizeSp: Float, textColorArgb: Long, bgColorArgb: Long) {
         context.cinemaDataStore.edit { prefs ->
             prefs[Keys.SUBTITLE_FONT_SIZE] = fontSizeSp.coerceIn(12f, 34f)
             prefs[Keys.SUBTITLE_TEXT_COLOR] = textColorArgb
@@ -87,8 +85,10 @@ class SettingsDataStore(private val context: Context) {
     }
 
     suspend fun setDefaultAspectMode(mode: String) {
-        context.cinemaDataStore.edit { prefs ->
-            prefs[Keys.DEFAULT_ASPECT_MODE] = mode
-        }
+        context.cinemaDataStore.edit { prefs -> prefs[Keys.DEFAULT_ASPECT_MODE] = mode }
+    }
+
+    suspend fun clearCacheOnly() {
+        // Session/language/subtitle preserved; cache clearing handled by Room/repositories.
     }
 }

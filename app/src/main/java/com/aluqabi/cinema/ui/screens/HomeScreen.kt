@@ -54,13 +54,11 @@ import com.aluqabi.cinema.ui.theme.TextSecondary
 @Composable
 fun HomeScreen(
     strings: AppStrings,
-    hasTmdbKey: Boolean,
     catalogState: CatalogUiState,
     customItems: List<MediaCardItem>,
     watchHistory: List<WatchHistoryEntity>,
     onMediaClick: (MediaCardItem) -> Unit,
-    onResumeHistory: (WatchHistoryEntity) -> Unit,
-    onOpenSettings: () -> Unit
+    onResumeHistory: (WatchHistoryEntity) -> Unit
 ) {
     val heroItem = catalogState.trending.firstOrNull()
         ?: customItems.firstOrNull()
@@ -92,16 +90,6 @@ fun HomeScreen(
                     item = heroItem,
                     watchLabel = strings.watchNow,
                     onClick = { onMediaClick(heroItem) }
-                )
-            }
-        } else if (!hasTmdbKey && customItems.isEmpty()) {
-            item {
-                EmptyStateCard(
-                    icon = Icons.Rounded.Key,
-                    title = strings.noTmdbKeyTitle,
-                    description = strings.noTmdbKeyDesc,
-                    actionLabel = strings.openSettings,
-                    onAction = onOpenSettings
                 )
             }
         }

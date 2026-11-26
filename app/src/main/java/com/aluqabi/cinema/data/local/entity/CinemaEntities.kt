@@ -35,7 +35,7 @@ data class FavoriteEntity(
     @PrimaryKey
     val recordKey: String, // "${userId}_${mediaKey}"
     val mediaKey: String,
-    val userId: Long,
+    val userId: Long = 0L,
     val mediaType: String, // MOVIE, SERIES, LIVE_TV
     val title: String,
     val posterUrl: String = "",
@@ -44,7 +44,8 @@ data class FavoriteEntity(
     val tmdbId: Int? = null,
     val rating: Double = 0.0,
     val year: String = "",
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val cloudUserId: String = ""
 )
 
 @Entity(tableName = "watch_history")
@@ -52,7 +53,7 @@ data class WatchHistoryEntity(
     @PrimaryKey
     val recordKey: String, // "${userId}_${mediaKey}"
     val mediaKey: String,
-    val userId: Long,
+    val userId: Long = 0L,
     val mediaType: String, // MOVIE, SERIES, LIVE_TV
     val title: String,
     val subtitle: String = "",
@@ -63,7 +64,8 @@ data class WatchHistoryEntity(
     val episodeNumber: Int? = null,
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val cloudUserId: String = ""
 )
 
 @Entity(tableName = "media_link_overrides")

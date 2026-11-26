@@ -14,7 +14,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,12 +55,10 @@ import com.aluqabi.cinema.ui.theme.TextSecondary
 @Composable
 fun MoviesScreen(
     strings: AppStrings,
-    hasTmdbKey: Boolean,
     catalogState: CatalogUiState,
     customItems: List<MediaCardItem>,
     onSelectGenre: (Int?) -> Unit,
-    onMediaClick: (MediaCardItem) -> Unit,
-    onOpenSettings: () -> Unit
+    onMediaClick: (MediaCardItem) -> Unit
 ) {
     val customMovies = remember(customItems) {
         customItems.filter { it.mediaType == MediaType.MOVIE }
@@ -76,25 +73,21 @@ fun MoviesScreen(
 
     CatalogTabContent(
         strings = strings,
-        hasTmdbKey = hasTmdbKey,
         genres = catalogState.movieGenres,
         selectedGenreId = catalogState.selectedMovieGenreId,
         items = combined,
         onSelectGenre = onSelectGenre,
-        onMediaClick = onMediaClick,
-        onOpenSettings = onOpenSettings
+        onMediaClick = onMediaClick
     )
 }
 
 @Composable
 fun SeriesScreen(
     strings: AppStrings,
-    hasTmdbKey: Boolean,
     catalogState: CatalogUiState,
     customItems: List<MediaCardItem>,
     onSelectGenre: (Int?) -> Unit,
-    onMediaClick: (MediaCardItem) -> Unit,
-    onOpenSettings: () -> Unit
+    onMediaClick: (MediaCardItem) -> Unit
 ) {
     val customSeries = remember(customItems) {
         customItems.filter { it.mediaType == MediaType.SERIES }
@@ -109,26 +102,22 @@ fun SeriesScreen(
 
     CatalogTabContent(
         strings = strings,
-        hasTmdbKey = hasTmdbKey,
         genres = catalogState.seriesGenres,
         selectedGenreId = catalogState.selectedSeriesGenreId,
         items = combined,
         onSelectGenre = onSelectGenre,
-        onMediaClick = onMediaClick,
-        onOpenSettings = onOpenSettings
+        onMediaClick = onMediaClick
     )
 }
 
 @Composable
 private fun CatalogTabContent(
     strings: AppStrings,
-    hasTmdbKey: Boolean,
     genres: List<TmdbGenreDto>,
     selectedGenreId: Int?,
     items: List<MediaCardItem>,
     onSelectGenre: (Int?) -> Unit,
-    onMediaClick: (MediaCardItem) -> Unit,
-    onOpenSettings: () -> Unit
+    onMediaClick: (MediaCardItem) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -171,11 +160,9 @@ private fun CatalogTabContent(
 
         if (items.isEmpty()) {
             EmptyStateCard(
-                icon = Icons.Rounded.Key,
-                title = if (hasTmdbKey) strings.searchNoResults else strings.noTmdbKeyTitle,
-                description = strings.noTmdbKeyDesc,
-                actionLabel = strings.openSettings,
-                onAction = onOpenSettings
+                icon = Icons.Rounded.Movie,
+                title = strings.searchNoResults,
+                description = ""
             )
         } else {
             MediaPosterGrid(
