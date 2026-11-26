@@ -5,10 +5,12 @@
 ## المميزات الرئيسية
 
 - **هوية مرنة بدون أيقونة مخصصة:** يستخدم التطبيق الأيقونة الافتراضية القياسية لنظام أندرويد في `AndroidManifest.xml` لتتمكن من إضافة الشعار الخاص بك (`ic_launcher`) لاحقاً.
-- **نظام حسابات محلي متكامل (Room + DataStore):**
-  - تسجيل الدخول وإنشاء حساب بالبريد الإلكتروني وكلمة المرور مع تحقق صارم وتشفير SHA-256 بملح عشوائي (Salt).
-  - تسجيل الدخول عبر رقم الهاتف ورمز التحقق (OTP المحلي).
-  - أزرار تسجيل سريع عبر Google و Facebook.
+- **حسابات Supabase سحابية:**
+  - تسجيل الدخول وإنشاء حساب بالبريد الإلكتروني وكلمة المرور.
+  - تسجيل سريع عبر Google ID Token و Facebook OAuth (App ID `1695851235579606`، مشروع `lsqpmchchaujrjoldbyl`).
+  - جلسات Supabase محفوظة محلياً عبر DataStore مع تحديث تلقائي للرموز وتسجيل خروج آمن.
+  - العودة من Facebook OAuth عبر `cinealuqabi://auth-callback`؛ لا تُخزّن أسرار Facebook داخل التطبيق.
+  - أُزيلت مسارات X/Twitter وتسجيل الدخول برقم الهاتف/OTP.
   - أيقونة **☰** في الشريط العلوي تفتح شاشة **الملف الشخصي** المنفصلة عن الإعدادات (تعديل البيانات، المفضلة، سجل المشاهدة، تسجيل الخروج).
 - **5 أقسام رئيسية في الشريط السفلي:** الرئيسية، أفلام، مسلسلات، بث مباشر، الإعدادات.
 - **مصادر مرنة وربط تلقائي مع TMDB:**
@@ -73,6 +75,41 @@
 }
 ```
 
-## بناء ملف APK
+## بناء ملف APK وتثبيته
 
-المشروع مجهز للبناء التلقائي عبر **GitHub Actions** (`.github/workflows/android.yml`) الذي ينفّذ الاختبارات وينتج ملفات `app-debug.apk` و `app-release.apk`، أو عبر فتح المجلد مباشرة في **Android Studio** (JDK 17, Android SDK 35).
+### GitHub Actions (الطريقة الموصى بها خارج أجهزة aarch64)
+
+أضف في إعدادات المستودع → Secrets and variables → Actions هذه القيم:
+
+- `SUPABASE_URL` و `SUPABASE_ANON_KEY` (مطلوبان).
+- `GOOGLE_WEB_CLIENT_ID` و `TMDB_API_KEY` (اختياريان).
+
+يعمل سير `.github/workflows/android.yml` على `ubuntu-latest`، ويثبّت Android SDK 35، ويشغّل الاختبارات، وينتج `app-debug.apk` و `app-release.apk` كمرفقات (Artifacts). بعد التنزيل ثبّت على الجهاز:
+
+```bash
+adb install -r app-debug.apk
+```
+
+### بناء محلي على x86_64
+
+المتطلبات: JDK 17، Android SDK 35، Gradle 8.11.1، و`adb` للتثبيت. أنشئ ملف `local.properties` غير المُودع في Git:
+
+```properties
+sdk.dir=/path/to/Android/Sdk
+SUPABASE_URL=https://lsqpmchchaujrjoldbyl.supabase.co
+SUPABASE_ANON_KEY=YOUR_PUBLISHABLE_KEY
+GOOGLE_WEB_CLIENT_ID=YOUR_GOOGLE_WEB_CLIENT_ID.apps.googleusercontent.com
+```
+
+ثم شغّل:
+
+```bash
+bash scripts/build-apk.sh
+bash scripts/build-apk.sh --install
+```
+
+السكربت يفشل بوضوح على `aarch64`/`arm64` لأن AAPT2 المرفق بـ Android Gradle Plugin يعمل على x86-64 فقط؛ استخدم GitHub Actions أو جهاز x86_64 في هذه الحالة. لا تضف `local.properties` أو أي مفاتيح إلى Git.
+
+### إعداد Supabase يدوياً
+
+فعّل مزوّدي Email و Google و Facebook في لوحة Supabase، واضبط Facebook App Secret داخل اللوحة فقط، وأضف `https://lsqpmchchaujrjoldbyl.supabase.co/auth/v1/callback` إلى Redirect URIs في تطبيق Facebook، وأضف `cinealuqabi://auth-callback` إلى Redirect URLs في Supabase، ثم نفّذ `supabase_setup.sql` في SQL Editor.
