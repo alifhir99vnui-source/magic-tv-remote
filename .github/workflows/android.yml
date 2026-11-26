@@ -73,10 +73,10 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Validate build secrets
+        shell: bash
         run: |
           if [[ -z "$SUPABASE_URL" || -z "$SUPABASE_ANON_KEY" ]]; then
-            echo "Set SUPABASE_URL and SUPABASE_ANON_KEY in GitHub repository secrets."
-            exit 1
+            echo "::warning::SUPABASE_URL and/or SUPABASE_ANON_KEY are not set; building with placeholders. Add repository secrets for a fully configured app."
           fi
 
       - name: Run unit tests
