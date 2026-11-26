@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -7,9 +9,14 @@ plugins {
 }
 
 fun resolveConfigValue(name: String, defaultValue: String): String {
+    val localProps = Properties().apply {
+        val file = rootProject.file("local.properties")
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
     val fromEnv = System.getenv(name)?.takeIf { it.isNotBlank() }
+    val fromLocal = localProps.getProperty(name)?.takeIf { it.isNotBlank() }
     val fromProp = project.findProperty(name)?.toString()?.takeIf { it.isNotBlank() }
-    val value = (fromEnv ?: fromProp ?: defaultValue).replace("\"", "\\\"")
+    val value = (fromEnv ?: fromLocal ?: fromProp ?: defaultValue).replace("\"", "\\\"")
     return "\"$value\""
 }
 
